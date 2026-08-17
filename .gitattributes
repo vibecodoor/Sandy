@@ -1,0 +1,2 @@
+# Sandy invariant: never normalize line endings — files keep their exact bytes.
+* -text

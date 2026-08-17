@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f2e8dc"/>
+      <stop offset="0.55" stop-color="#e8d5c4"/>
+      <stop offset="1" stop-color="#d9b8a5"/>
+    </linearGradient>
+    <linearGradient id="hill1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c9a28e"/>
+      <stop offset="1" stop-color="#b98f7b"/>
+    </linearGradient>
+    <linearGradient id="hill2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a97f6c"/>
+      <stop offset="1" stop-color="#96705f"/>
+    </linearGradient>
+    <clipPath id="squircle">
+      <rect width="1024" height="1024" rx="228"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#squircle)">
+    <rect width="1024" height="1024" fill="url(#sky)"/>
+    <circle cx="732" cy="308" r="118" fill="#f7f0e6" opacity="0.95"/>
+    <path d="M0 640 Q 256 540 512 620 T 1024 600 V 1024 H 0 Z" fill="url(#hill1)"/>
+    <path d="M0 800 Q 320 704 640 784 T 1024 764 V 1024 H 0 Z" fill="url(#hill2)"/>
+  </g>
+</svg>

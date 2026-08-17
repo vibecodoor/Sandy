@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 420" role="img" aria-label="A calm gradient">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f2e8dc"/>
+      <stop offset="0.55" stop-color="#e8d5c4"/>
+      <stop offset="1" stop-color="#d9b8a5"/>
+    </linearGradient>
+    <linearGradient id="hill1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c9a28e"/>
+      <stop offset="1" stop-color="#b98f7b"/>
+    </linearGradient>
+    <linearGradient id="hill2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a97f6c"/>
+      <stop offset="1" stop-color="#96705f"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="420" fill="url(#sky)"/>
+  <circle cx="960" cy="130" r="64" fill="#f7f0e6" opacity="0.9"/>
+  <path d="M0 300 Q 320 220 640 290 T 1280 270 V 420 H 0 Z" fill="url(#hill1)"/>
+  <path d="M0 360 Q 400 290 800 350 T 1280 340 V 420 H 0 Z" fill="url(#hill2)"/>
+</svg>

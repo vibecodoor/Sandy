@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.local
+.DS_Store
+Thumbs.db
+# session work products (PDF smokes, scratch scripts) — never repo content
+tmp/
+output/

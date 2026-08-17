@@ -1,0 +1,1011 @@
+/* ─── app frame ──────────────────────────────────────────── */
+
+.app-shell {
+  display: flex;
+  height: 100%;
+  /* first paint: the window is revealed only once the app has painted, so
+   * this is the app materialising rather than a blank frame being filled */
+  animation: app-in var(--dur-calm) var(--ease-soft);
+}
+
+@keyframes app-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.document-shell {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+/* ─── titlebar (undecorated window) ──────────────────────── */
+
+.titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  z-index: 100;
+  background: var(--bg);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.titlebar-title {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+}
+
+.titlebar-spacer {
+  flex: 1;
+  height: 100%;
+}
+
+.titlebar-controls {
+  display: flex;
+  height: 100%;
+  margin-left: 4px;
+}
+
+.tb-btn {
+  width: 36px;
+  height: 30px;
+  margin: 0 2px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-soft);
+  padding: 0;
+  transition:
+    background-color var(--dur-quick) var(--ease-out),
+    color var(--dur-quick) var(--ease-out),
+    transform var(--dur-quick) var(--ease-out);
+}
+
+.tb-btn:first-child {
+  margin-left: 6px;
+}
+
+.tb-btn svg {
+  stroke-width: 1.2;
+}
+
+.tb-btn:hover {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  color: var(--ink);
+}
+
+.tb-btn:active {
+  background: color-mix(in srgb, var(--ink) 11%, transparent);
+  transform: scale(0.94);
+}
+
+.tb-btn[aria-pressed="true"] {
+  color: var(--accent-ink);
+}
+
+/* sun ↔ moon are two different icons, so the incoming one turns into place
+ * as it arrives — the switch reads as one object rotating, not a swap */
+.tb-theme svg {
+  animation: theme-turn var(--dur-base) var(--ease-out);
+}
+
+@keyframes theme-turn {
+  from {
+    opacity: 0;
+    transform: rotate(-70deg) scale(0.6);
+  }
+}
+
+/* window controls stay full-height and square — native Win11 shape */
+.tb-win {
+  width: 46px;
+  height: 40px;
+  margin: 0;
+  border-radius: 0;
+}
+
+/* these sit flush against the window edge, so the ring turns inward or the
+ * screen simply clips its outer half off */
+.tb-win:focus-visible {
+  outline-offset: -3px;
+}
+
+.tb-win:active {
+  transform: none;
+}
+
+.tb-close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
+.tb-close:active {
+  background: #b0271a;
+  color: #fff;
+}
+
+/* ─── sidebar ────────────────────────────────────────────── */
+
+.sidebar {
+  /* border-box so the closed offset below is exactly the width — otherwise the
+   * 1px right border stays behind on screen when the panel is out */
+  box-sizing: border-box;
+  width: 268px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: 40px;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  user-select: none;
+  -webkit-user-select: none;
+  /* The panel stays mounted and slides, so it leaves the way it arrives. It
+   * used to be unmounted on close, which only ever animates one direction:
+   * arriving, it eased in over 268px of new column; leaving, the column
+   * vanished under the page in a single frame. */
+  transition:
+    margin-left var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out),
+    opacity var(--dur-base) var(--ease-out);
+}
+
+.sidebar.is-closed {
+  margin-left: -268px;
+  border-right-color: transparent;
+  opacity: 0;
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 6px;
+  color: var(--ink-soft);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sidebar-head span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ─── vault switcher (sidebar header) ────────────────────── */
+
+.vault-switcher {
+  position: relative;
+}
+
+.vault-head {
+  width: calc(100% - 12px);
+  margin: 4px 6px 0;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  cursor: default;
+  font-family: inherit;
+  transition:
+    background-color var(--dur-quick) var(--ease-out),
+    color var(--dur-quick) var(--ease-out);
+}
+
+.vault-head:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--ink);
+}
+
+.vault-chevron {
+  flex-shrink: 0;
+  opacity: 0.7;
+  transform: rotate(90deg);
+}
+
+.vault-chevron.is-open {
+  transform: rotate(-90deg);
+}
+
+.vault-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 8px;
+  right: 8px;
+  z-index: 150;
+  padding: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 36px -10px color-mix(in srgb, var(--ink) 32%, transparent);
+  animation: overlay-pop var(--dur-snap) var(--ease-out);
+}
+
+.vault-row {
+  display: flex;
+  align-items: center;
+  border-radius: 7px;
+}
+
+.vault-row:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.vault-row.is-current .vault-row-name {
+  color: var(--accent-ink);
+}
+
+.vault-row-main {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  padding: 5px 8px;
+  border-radius: 7px;
+}
+
+.vault-row-name {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vault-row-path {
+  display: block;
+  color: var(--ink-faint);
+  font-size: 10.5px;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vault-row-forget {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 4px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-faint);
+  padding: 0;
+  opacity: 0;
+  transition:
+    opacity var(--dur-quick) var(--ease-out),
+    color var(--dur-quick) var(--ease-out),
+    background-color var(--dur-quick) var(--ease-out);
+}
+
+.vault-row:hover .vault-row-forget {
+  opacity: 1;
+}
+
+.vault-row-forget:hover {
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+  color: var(--ink);
+}
+
+.vault-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+.vault-open-folder .vault-row-name {
+  color: var(--accent-ink);
+}
+
+.vault-open-folder:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.sidebar-tree {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2px 6px 12px;
+}
+
+.sidebar-empty {
+  padding: 18px 14px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.sidebar-empty button {
+  margin-top: 10px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  transition:
+    border-color var(--dur-quick) var(--ease-out),
+    background-color var(--dur-quick) var(--ease-out);
+}
+
+.sidebar-empty button:hover {
+  border-color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.tree-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  padding: 3px 8px;
+  border-radius: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-quick) var(--ease-out),
+    color var(--dur-quick) var(--ease-out);
+}
+
+/* A rail in the gutter marks the open note. Rows are keyed by path, so the
+ * losing row shrinks its rail while the winning one grows: reading as one
+ * marker travelling down the tree instead of two rows blinking. */
+.tree-row::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 2px;
+  height: 0;
+  transform: translateY(-50%);
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+  transition: height var(--dur-snap) var(--ease-out);
+}
+
+.tree-row.is-active::before {
+  height: 64%;
+}
+
+.tree-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-row:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.tree-row.is-dir {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.tree-row.is-active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-ink);
+}
+
+/* Inline rename: the row itself turns into an input — no dialog chrome. */
+.tree-row.is-renaming {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.tree-rename-input {
+  width: 100%;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  padding: 0;
+}
+
+/* inset, because the row it lives in clips its own overflow */
+.tree-rename-input:focus-visible {
+  outline-offset: -2px;
+}
+
+/* A "/" in the rename field moves the note; this says where to, under the row
+ * being typed in, and is only there while the name has one. */
+.tree-rename-hint {
+  padding: 1px 8px 4px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.tree-chevron {
+  flex-shrink: 0;
+  transition: transform var(--dur-snap) var(--ease-out);
+  transform: rotate(0deg);
+}
+
+.tree-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+/* A folder opens as a short cascade rather than a block of rows appearing at
+ * once. Only the first few carry a delay — past that the eye reads it as lag,
+ * and a deep folder would take half a second to finish arriving. */
+.tree-children > * {
+  animation: tree-unfold var(--dur-base) var(--ease-out) backwards;
+}
+
+.tree-children > *:nth-child(2) { animation-delay: 20ms; }
+.tree-children > *:nth-child(3) { animation-delay: 40ms; }
+.tree-children > *:nth-child(4) { animation-delay: 60ms; }
+.tree-children > *:nth-child(5) { animation-delay: 80ms; }
+.tree-children > *:nth-child(n + 6) { animation-delay: 100ms; }
+
+@keyframes tree-unfold {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+}
+
+.sidebar-backlinks {
+  border-top: 1px solid var(--border);
+  max-height: 38%;
+  overflow-y: auto;
+  padding: 8px 6px 12px;
+}
+
+.sidebar-backlinks .sidebar-head {
+  padding: 0 8px 4px;
+}
+
+/* "×N" occurrences badge on an unlinked-mention row */
+.mention-count {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-right: 6px;
+  color: var(--ink-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-tree::-webkit-scrollbar,
+.sidebar-backlinks::-webkit-scrollbar {
+  width: 8px;
+}
+.sidebar-tree::-webkit-scrollbar-thumb,
+.sidebar-backlinks::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+/* ─── overlays (quick-open, search) ──────────────────────── */
+
+.overlay-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: color-mix(in srgb, var(--ink) 18%, transparent);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  animation: overlay-fade var(--dur-quick) var(--ease-out);
+}
+
+.overlay-panel {
+  margin-top: 11vh;
+  width: min(580px, 92vw);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px -12px color-mix(in srgb, var(--ink) 35%, transparent);
+  overflow: hidden;
+  font-family: var(--font-ui);
+  animation: overlay-pop var(--dur-snap) var(--ease-out);
+}
+
+@keyframes overlay-fade {
+  from { opacity: 0; }
+}
+
+@keyframes overlay-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.985);
+  }
+}
+
+.overlay-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14.5px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--border);
+  transition: border-color var(--dur-quick) var(--ease-out);
+}
+
+/* The one place the house ring steps aside: this field is focused the instant
+ * the palette opens and is the only thing in it that can be, so a permanent
+ * rectangle around it would be decoration rather than information. The rule
+ * under it takes the accent instead — same colour, same message, no box. */
+.overlay-input:focus-visible {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
+.overlay-input::placeholder {
+  color: var(--ink-soft);
+}
+
+.overlay-list {
+  max-height: 48vh;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.overlay-list:empty {
+  display: none;
+}
+
+.overlay-row {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 7px;
+  cursor: default;
+  /* no per-row entrance: results must feel instant while typing — the panel's
+   * own overlay-pop is the only arrival the palette gets */
+  /* short enough that arrow-keying at speed never trails behind the caret */
+  transition: background-color var(--dur-quick) var(--ease-out);
+}
+
+.overlay-row.is-selected {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.overlay-row-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overlay-row-detail {
+  display: block;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overlay-row mark {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+
+.overlay-row .is-create {
+  color: var(--accent-ink);
+}
+
+.overlay-row-heading .overlay-heading-hash {
+  color: var(--ink-faint);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+.overlay-hint {
+  padding: 10px 16px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.overlay-list::-webkit-scrollbar {
+  width: 8px;
+}
+.overlay-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+/* ─── context menu ───────────────────────────────────────── */
+
+.ctx-menu {
+  position: fixed;
+  z-index: 300;
+  min-width: 208px;
+  padding: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 14px 40px -12px color-mix(in srgb, var(--ink) 36%, transparent);
+  font-family: var(--font-ui);
+  user-select: none;
+  -webkit-user-select: none;
+  animation: ctx-pop var(--dur-quick) var(--ease-out);
+  transform-origin: top left;
+}
+
+@keyframes ctx-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+.ctx-item {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: 12.5px var(--font-ui);
+  text-align: left;
+  padding: 5.5px 10px;
+  border-radius: 7px;
+  transition: background-color var(--dur-quick) var(--ease-out);
+}
+
+.ctx-item:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+}
+
+.ctx-item:disabled {
+  color: var(--ink-faint);
+}
+
+.ctx-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ctx-shortcut {
+  color: var(--ink-faint);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.ctx-sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--border);
+}
+
+/* ─── corner actions (bottom-right, unfolds on hover) ────── */
+
+/* column-reverse, with the trigger first in the DOM: the panel still sits above
+ * the dot on screen, but Tab now reaches the dot and *then* its contents. In
+ * source order the other way round, Export PDF and all three writing modes were
+ * unreachable by a forward Tab — the only way to them was a mouse. */
+.corner {
+  position: fixed;
+  right: 14px;
+  bottom: 12px;
+  z-index: 80;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  font-family: var(--font-ui);
+}
+
+/* The dot rests at the faintest ink the palette has, at full strength, rather
+ * than at 45% of it: this is the only door to save, PDF export and the writing
+ * modes, and at 1.37 against the page it was a door with no handle. Quiet is
+ * still the point — quiet, not absent. */
+.corner-trigger {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-faint);
+  padding: 0;
+  transition:
+    color var(--dur-base) var(--ease-out),
+    background-color var(--dur-base) var(--ease-out);
+}
+
+.corner.is-open .corner-trigger,
+.corner-trigger:hover,
+.corner-trigger:focus-visible {
+  color: var(--ink-soft);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.corner-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  margin-bottom: 7px;
+  min-width: 178px;
+  padding: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  box-shadow: 0 14px 40px -12px color-mix(in srgb, var(--ink) 34%, transparent);
+  opacity: 0;
+  transform: translateY(7px) scale(0.96);
+  transform-origin: bottom right;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out);
+}
+
+.corner.is-open .corner-panel {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+/* The panel unfolds, so its contents unfold with it — each row a beat behind
+ * the one above. Closing carries no delays (they only exist on `.is-open`),
+ * so the stack goes away in one motion.
+ * Scoped through `.corner` deliberately: `.corner-item` below sets its own
+ * `transition` shorthand, and at equal specificity the later rule would
+ * replace this one wholesale. */
+.corner .corner-panel > * {
+  opacity: 0;
+  transform: translateY(5px);
+  transition:
+    opacity var(--dur-snap) var(--ease-out),
+    transform var(--dur-snap) var(--ease-out),
+    /* the rows' own hover wash, folded in here because this rule now owns
+       the `transition` shorthand for every panel child */
+    background-color var(--dur-quick) var(--ease-out);
+}
+
+.corner.is-open .corner-panel > * {
+  opacity: 1;
+  transform: none;
+}
+
+/* Halved from 24ms: the stagger used to run 120ms past a 150ms row transition,
+ * so the stack finished 330ms after the hover — long enough to feel like the
+ * app was thinking. At 60ms the last row lands on 210ms, the same beat as the
+ * panel that carries it, and the whole thing arrives as one object. */
+.corner.is-open .corner-panel > *:nth-child(2) { transition-delay: 12ms; }
+.corner.is-open .corner-panel > *:nth-child(3) { transition-delay: 24ms; }
+.corner.is-open .corner-panel > *:nth-child(4) { transition-delay: 36ms; }
+.corner.is-open .corner-panel > *:nth-child(5) { transition-delay: 48ms; }
+.corner.is-open .corner-panel > *:nth-child(n + 6) { transition-delay: 60ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* both selectors match the specificity of the rules they override above */
+  .corner-panel,
+  .corner .corner-panel > * {
+    transform: none;
+  }
+  /* :nth-child(n) matches every child and ties the specificity of the
+   * staggered rules above, so this later declaration wins */
+  .corner.is-open .corner-panel > *:nth-child(n) {
+    transition-delay: 0ms;
+  }
+}
+
+.corner-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px 5px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+/* Each line is one unbroken thought — the panel widens to fit rather than
+ * wrapping "5 paragraphs · 1 min" across two rows. */
+.corner-stats > span {
+  white-space: nowrap;
+}
+
+/* The selection line is the answer to a question you just asked by selecting,
+ * so it leads rather than recedes. */
+.corner-stats-selection {
+  color: var(--ink);
+}
+
+.corner-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: 12.5px var(--font-ui);
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 7px;
+  /* hover transition lives on `.corner .corner-panel > *` above — it owns the
+   * shorthand for every child, and a second one here would be dead weight */
+}
+
+.corner-item svg {
+  flex-shrink: 0;
+  color: var(--ink-soft);
+}
+
+.corner-item:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.corner-item:disabled {
+  color: var(--ink-soft);
+}
+
+.corner-item span {
+  flex: 1;
+}
+
+.corner-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ink-faint) 55%, transparent);
+  /* the dot changes colour as the save settles — a fade, never a pulse; a
+   * blinking indicator would be the one restless thing on a calm page */
+  transition: background-color var(--dur-base) var(--ease-soft);
+}
+
+.corner-dot.is-dirty {
+  background: var(--accent);
+}
+
+.corner-dot.is-failed {
+  background: var(--danger);
+}
+
+.corner-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+/* writing-mode toggles read as lit when on: accent icon + trailing check */
+.corner-toggle.is-on {
+  color: var(--ink);
+}
+.corner-toggle.is-on svg {
+  color: var(--accent);
+}
+.corner-check {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+/* ── save-failure banner: calm, floating under the titlebar ── */
+.save-banner {
+  position: fixed;
+  top: 48px;
+  right: 14px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 460px;
+  padding: 9px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  /* --surface, not --code-bg: this is the one panel that floats *toward* the
+   * reader, and --code-bg is darker than the page in the light theme, so it
+   * used to read as a hole rather than as a card */
+  background: var(--surface);
+  color: var(--ink);
+  font: 13px var(--font-ui);
+  box-shadow: 0 14px 40px -12px color-mix(in srgb, var(--ink) 34%, transparent);
+  /* comes down from under the titlebar — the direction says where it's from */
+  animation: banner-drop var(--dur-base) var(--ease-out);
+}
+
+@keyframes banner-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+}
+
+.save-banner-text {
+  line-height: 1.45;
+}
+
+.save-banner-btn {
+  flex: none;
+  font: 12.5px var(--font-ui);
+  color: var(--accent-ink);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.save-banner-btn:hover {
+  border-color: var(--accent);
+}
+
+.save-banner-danger {
+  color: var(--danger);
+}
+
+/* ─── Windows high contrast ──────────────────────────────── */
+
+/* Every selection state in the shell is a translucent accent wash, and forced
+ * colours flatten all of them to Canvas — so the quick-open cursor vanished
+ * mid-keystroke and the tree forgot which note was open. Restated in the system
+ * keywords, which are the only palette forced mode keeps — every other value in
+ * these sheets is replaced for us, so only the states carried by a fill need
+ * saying again here. */
+@media (forced-colors: active) {
+  .overlay-row.is-selected,
+  .tree-row.is-active {
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  /* the child spans carry their own colour, which would otherwise be forced
+   * back to CanvasText and land dark-on-dark inside the selection */
+  .overlay-row.is-selected .overlay-row-name,
+  .overlay-row.is-selected .overlay-row-detail,
+  .tree-row.is-active span {
+    color: HighlightText;
+  }
+
+  /* the gutter rail is a bar of pure accent — a fill, so it flattens away */
+  .tree-row.is-active::before {
+    background: HighlightText;
+  }
+}

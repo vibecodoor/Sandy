@@ -1,0 +1,351 @@
+/*
+ * Print / PDF export stylesheet. The .print-doc container holds a static
+ * render of the document (printExport.ts) and exists only while printing.
+ * Paper is always light — colors are the warm-sand literals, theme-independent,
+ * and they track the light palette in index.css by hand: secondary ink is
+ * --ink-soft's #756654 and every rule is --rule's #a08560, so an exported page
+ * and the page it was exported from are the same document.
+ */
+
+.print-doc {
+  display: none;
+}
+
+@media print {
+  html,
+  body {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible;
+    background: #fff;
+  }
+
+  /* App.tsx portals .print-doc to <body>; hiding every other body child
+   * (i.e. #root and the whole app) is what blanks the app UI on paper.
+   * The copy must stay OUTSIDE #root or this rule swallows it. */
+  body > :not(.print-doc) {
+    display: none !important;
+  }
+
+  /* Keep in step with pdf.rs's MARGIN_V_IN / MARGIN_H_IN — the native export
+   * states the same numbers, so it does not matter which of CSS and the print
+   * settings Chromium lets win. The margin also has to exist for the boxes
+   * below to have anywhere to sit. */
+  @page {
+    /* pdf.rs states A4 *and* these margins; this file stated only the margins,
+     * so the invariant's paper half lived in one file. It matters on the
+     * `window.print()` fallback (off Tauri, or when `export_pdf` throws): there
+     * the paper comes from the dialog's default, and a Letter default reflows
+     * the whole document against unchanged 19 mm sides. */
+    size: A4;
+    margin: 20mm 19mm;
+
+    /* Margin boxes: Chrome 131, and the runtime is 151 and fixed, so this is
+     * one of the few things a browser-based editor can print and a
+     * cross-browser rival cannot. `string-set`/`string()` are unsupported
+     * everywhere, so a *live section* running head is impossible — the title is
+     * static, written to --pd-title by the exporter. Flexible margin boxes size
+     * like `flex: auto` and overflow instead of wrapping, hence the ellipsis. */
+    @top-left {
+      content: var(--pd-title, "");
+      font-family: var(--font-ui);
+      font-size: 8pt;
+      letter-spacing: 0.02em;
+      color: #8f8069;
+      max-width: 100%;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      vertical-align: bottom;
+      padding-bottom: 4mm;
+    }
+
+    @bottom-center {
+      content: counter(page) " / " counter(pages);
+      font-family: var(--font-ui);
+      font-size: 8pt;
+      font-variant-numeric: tabular-nums;
+      color: #8f8069;
+      vertical-align: top;
+      padding-top: 5mm;
+    }
+  }
+
+  /* Page one carries the note's own title in its first heading; a running head
+   * repeating it there is the thing typographers leave off. */
+  @page :first {
+    @top-left {
+      content: "";
+    }
+  }
+
+  .print-doc {
+    /* flow-root contains the first heading's margin (no collapse into body) */
+    display: flow-root;
+    font-family: var(--font-prose);
+    font-size: 11.5pt;
+    line-height: 1.65;
+    color: #2b241c;
+    /* Book practice, and both properties inherit — one declaration here reaches
+     * the list items, quotes and callout bodies that never had them. The
+     * initial value is 2, which is why the old `orphans: 2` on `p` changed
+     * nothing at all. */
+    orphans: 3;
+    widows: 3;
+  }
+
+  /* The belt to pdf.rs's ShouldPrintBackgrounds braces. Chromium's own
+   * behaviour without this is inconsistent enough to be called a bug, and
+   * every face in this file — the code card, the six callout tints, `mark`,
+   * `th`, the properties card — is a background. */
+  .print-doc,
+  .print-doc * {
+    print-color-adjust: exact;
+  }
+
+  /* The editor's heading ladder, ported one for one. It is written there as air
+   * measured in *body* leading (--h-above / --h-below on .cm-line.md-hline), so
+   * each value below is that same air divided by the heading's own size — which
+   * is what an em means here. Keep the two in step: they are one ladder. */
+  .print-doc h1,
+  .print-doc h2,
+  .print-doc h3,
+  .print-doc h4,
+  .print-doc h5,
+  .print-doc h6 {
+    break-after: avoid;
+  }
+
+  .print-doc h1 { font-size: 1.75em; font-weight: 640; letter-spacing: -0.015em; line-height: 1.25; margin: 1em 0 0.31em; }
+  .print-doc h2 { font-size: 1.42em; font-weight: 620; letter-spacing: -0.01em; line-height: 1.3; margin: 1.02em 0 0.32em; }
+  .print-doc h3 { font-size: 1.2em;  font-weight: 620; line-height: 1.35; margin: 1em 0 0.32em; }
+  .print-doc h4 { font-size: 1.05em; font-weight: 640; margin: 1em 0 0.3em; }
+  .print-doc h5 { font-size: 1em;    font-weight: 640; margin: 0.95em 0 0.3em; }
+  .print-doc h6 { font-size: 1em;    font-weight: 600; color: #756654; margin: 0.85em 0 0.28em; }
+
+  .print-doc p {
+    margin: 0.55em 0;
+  }
+
+  /* Hyphenation, in the reader first: this is a static page for paper, so there
+   * is no reflow-while-typing, no CM6 height map and no `posAtCoords` to
+   * disturb. Chromium's bare `auto` breaks five-letter words with two
+   * characters hanging; 6/3/3 is the book setting. The dictionary is chosen
+   * from `lang`, which the exporter writes per block — without it a Russian
+   * paragraph would be hyphenated with English patterns, which fails as *no
+   * breaks* rather than as wrong ones. No `text-align: justify` alongside it:
+   * Chromium has no Knuth–Plass, and a justified 35rem measure rivers. */
+  .print-doc p,
+  .print-doc li,
+  .print-doc blockquote {
+    hyphens: auto;
+    hyphenate-limit-chars: 6 3 3;
+  }
+
+  /* matches .md-strong — bold is emphasis, never louder than the title above */
+  .print-doc strong {
+    font-weight: 600;
+  }
+
+  /* .md-link / .md-autolink — a bare https://… is linkified by printExport for
+   * the same reason it is styled in the editor: it is a link there. */
+  .print-doc a {
+    color: #8c5f4b;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .pd-wiki {
+    color: #8c5f4b;
+  }
+
+  /* matches .md-strike */
+  .print-doc s,
+  .print-doc del {
+    color: #756654;
+    text-decoration-color: #8f8069;
+  }
+
+  .print-doc mark {
+    background: #f2dfae;
+    border-radius: 3px;
+    padding: 0.05em 0.15em;
+  }
+
+  .print-doc code {
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+    background: #f1e7d6;
+    border-radius: 4px;
+    padding: 0.1em 0.32em;
+  }
+
+  .print-doc pre {
+    background: #f3ead9;
+    border-radius: 8px;
+    padding: 10px 14px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    break-inside: avoid;
+  }
+
+  .print-doc pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.85em;
+    line-height: 1.55;
+  }
+
+  /* The card's label, same as the editor's: with the ``` fences hidden there,
+   * the info string is what says which language this is. printExport puts it on
+   * the <pre> as an attribute, because a `language-…` class cannot be printed. */
+  .print-doc pre[data-lang]::before {
+    content: attr(data-lang);
+    display: block;
+    margin-bottom: 0.35em;
+    font-family: var(--font-mono);
+    font-size: 0.72em;
+    letter-spacing: 0.05em;
+    color: #756654;
+  }
+
+  /* the rule is --accent 40% over --rule, the same mix as .md-quote's border */
+  .print-doc blockquote {
+    border-left: 3px solid #a27e5f;
+    margin: 0.8em 0;
+    padding-left: 1em;
+    color: #756654;
+    break-inside: avoid;
+  }
+
+  /* Obsidian callouts (printExport.ts classes the blockquote). One accent per
+   * kind, mirroring editor.css's --callout-accent: the same six colours the
+   * light-palette pass settled on, not the paler set they were before it — a
+   * printed callout has to be the one you were looking at. The tints are those
+   * accents at 10% over paper white (the editor mixes 7% over the sand page;
+   * white takes a little more before it reads as a tint at all). The promoted
+   * **Title** takes the accent, like .md-callout-title. */
+  .print-doc blockquote.pd-callout {
+    --pd-accent: #8c5f4b;
+    border-left-width: 4px;
+    border-left-color: var(--pd-accent);
+    border-radius: 0 8px 8px 0;
+    padding: 0.5em 1em;
+    color: #756654;
+  }
+  .print-doc blockquote.pd-callout > :first-child { margin-top: 0; }
+  .print-doc blockquote.pd-callout > :last-child { margin-bottom: 0; }
+  .print-doc .pd-callout > p:first-child > strong:first-child {
+    color: var(--pd-accent);
+    font-weight: 640;
+  }
+  .print-doc .pd-callout-note    { background: #f4efed; }
+  .print-doc .pd-callout-info    { --pd-accent: #4c687d; background: #edf0f2; }
+  .print-doc .pd-callout-tip     { --pd-accent: #556a3e; background: #eef0ec; }
+  .print-doc .pd-callout-warning { --pd-accent: #9c5232; background: #f5eeeb; }
+  .print-doc .pd-callout-danger  { --pd-accent: #b53326; background: #f8ecea; }
+  .print-doc .pd-callout-quote   { --pd-accent: #756654; background: #f2f1ef; }
+
+  .print-doc hr {
+    border: none;
+    border-top: 1px solid #a08560;
+    margin: 1.4em 0;
+  }
+
+  /* centred in its own line, like .md-image's block-level img */
+  .print-doc img {
+    display: block;
+    max-width: 100%;
+    margin: 0.4em auto;
+    border-radius: 8px;
+    break-inside: avoid;
+  }
+
+  .print-doc table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+    font-family: var(--font-ui);
+    font-size: 0.88em;
+    /* the rendered table's columns line their figures up; so do these */
+    font-variant-numeric: tabular-nums;
+    break-inside: avoid;
+  }
+
+  .print-doc th,
+  .print-doc td {
+    border: 1px solid #a08560;
+    padding: 0.45em 0.7em;
+    text-align: left;
+  }
+
+  .print-doc th {
+    background: #f3ead9;
+    font-weight: 650;
+  }
+
+  .print-doc ul,
+  .print-doc ol {
+    padding-left: 1.5em;
+    margin: 0.55em 0;
+  }
+
+  .print-doc li {
+    break-inside: avoid;
+  }
+
+  .print-doc li.pd-task {
+    list-style: none;
+  }
+
+  /* the box takes .md-task's border ink, the tick .md-task-checked's accent,
+   * and a finished line recedes to .md-done's faint */
+  .print-doc li.pd-task::before {
+    content: "☐";
+    display: inline-block;
+    width: 1.3em;
+    margin-left: -1.3em;
+    color: #8f8069;
+  }
+
+  .print-doc li.pd-task-done::before {
+    content: "☑";
+    color: #a5745e;
+  }
+
+  .print-doc li.pd-task-done {
+    color: #8f8069;
+    text-decoration: line-through;
+  }
+
+  /* ─── properties card ────────────────────────────────────
+   * The frontmatter block, rendered rather than dropped: the editor shows it as
+   * a quiet card and this file's promise is that the two are one document. Same
+   * parts as .md-frontmatter — the fences become the card's edge, keys step back
+   * to secondary ink, a bare true/false is a checkbox. */
+  .print-doc .pd-props {
+    margin: 0 0 1.3em;
+    padding: 0.45em 1.1em;
+    border: 1px solid #a08560;
+    border-radius: 9px;
+    background: #faf7f2;
+    font-family: var(--font-ui);
+    font-size: 0.88em;
+    line-height: 1.8;
+    break-inside: avoid;
+  }
+
+  .print-doc .pd-prop {
+    white-space: pre-wrap;
+  }
+
+  .print-doc .pd-key {
+    color: #756654;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  .print-doc .pd-bool {
+    color: #a5745e;
+  }
+}

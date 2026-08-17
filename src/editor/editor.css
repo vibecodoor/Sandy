@@ -1,0 +1,877 @@
+/* ─── layout ─────────────────────────────────────────────── */
+
+.document-shell {
+  height: 100%;
+  background: var(--bg);
+}
+
+.document-shell.is-opening .editor-host {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.editor-host {
+  height: 100%;
+  overflow: hidden;
+  /* Opening a note remounts the editor, so this fires once per arrival: the
+   * page settles in rather than blinking into place. A uniform translate of
+   * the whole host is measurement-safe — CM6 reads scroller-vs-content rect
+   * differences, and both shift by the same amount. */
+  animation: doc-arrive var(--dur-calm) var(--ease-soft);
+}
+
+@keyframes doc-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+}
+
+.editor-host .cm-editor {
+  height: 100%;
+}
+
+/* The caret is the editor's own focus indicator — a warm ring drawn around the
+ * whole text column would be the loudest thing on an otherwise blank page. Two
+ * selectors because they are two elements: the focused node is `.cm-content`,
+ * while CM6 hangs the `.cm-focused` class on `.cm-editor` above it. */
+.editor-host .cm-editor.cm-focused,
+.editor-host .cm-content:focus-visible {
+  outline: none;
+}
+
+.editor-host .cm-scroller {
+  overflow-y: auto;
+  font-family: var(--font-prose);
+  font-size: 17px;
+  line-height: 1.75;
+  /* Styling ::-webkit-scrollbar below opts this scroller out of the overlay
+   * scrollbar and into one that takes width — so the centred column jumped
+   * left the moment a note grew past one screen, and back again when it
+   * shrank. The gutter is reserved on the scrollbar's side only, and the
+   * other side is balanced with 10px of extra padding: same measure, same
+   * place, scrolling or not.
+   *
+   * `both-edges` is what this used to say, and it cost a 10px error in every
+   * CM6 layer. A left-edge gutter is reported as `clientLeft`, and CM6 bases
+   * every layer (caret, selection, ours) on `scrollDOM.getBoundingClientRect()
+   * .left` — the *border* box — while the layer div is absolutely positioned
+   * against the *padding* box. The whole selection and the caret painted
+   * 10px right of the glyphs they were measured from. Keep this scroller's
+   * clientLeft at 0: no left gutter, no left border. */
+  padding: 0 24px 0 34px;
+  scrollbar-gutter: stable;
+}
+
+.editor-host .cm-scroller::-webkit-scrollbar {
+  width: 10px;
+}
+.editor-host .cm-scroller::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 5px;
+  border: 2px solid var(--bg);
+}
+.editor-host .cm-scroller::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Measure. 42rem put ~81 characters on a line of 17px serif — half again past
+ * the 45–75 a reader's eye tracks without losing the return. 35rem is the same
+ * page at ~66, the classic target, measured against this face rather than
+ * assumed: a rem rather than `66ch` so the column can't jump when the webfont
+ * swaps in. Dial it back toward 38rem if the tables feel pinched. */
+.editor-host .cm-content {
+  max-width: 35rem;
+  margin: 0 auto;
+  padding: 84px 0 45vh;
+  caret-color: var(--accent);
+}
+
+.editor-host .cm-line {
+  padding: 0;
+}
+
+/* focus mode: paragraphs away from the caret recede, gently */
+.editor-host .cm-focus-dim {
+  opacity: 0.3;
+  transition: opacity var(--dur-calm) var(--ease-soft);
+}
+
+/* selection + cursor — a firm clay caret, typewriter-style */
+.editor-host .cm-selectionBackground,
+.editor-host .cm-editor.cm-focused .cm-selectionBackground {
+  background: var(--selection) !important;
+}
+
+/* Text is selected by the browser (specs/selection-model.md). CM6's own painter
+ * reconstructs the geometry from line boxes and one sampled line's padding —
+ * both wrong here, where block air is padding *inside* a .cm-line and every
+ * line class carries a different one, so a multi-block selection came out as a
+ * slab whose edges moved with the scroll position. Its layer is retired;
+ * drawSelection stays on for the caret only. */
+.editor-host .cm-selectionLayer {
+  display: none !important;
+}
+
+/* drawSelection's hideNativeSelection is Prec.highest + !important, so it takes
+ * specificity to undo, not another !important: this is (0,3,1) against its
+ * `.ͼX .cm-line ::selection` (0,2,1). Both halves are needed — the descendant
+ * one for text inside marks, the element one for a line's own text nodes. */
+.editor-host .cm-editor .cm-line ::selection,
+.editor-host .cm-editor .cm-line::selection {
+  background-color: var(--selection) !important;
+}
+
+/* Except in a rendered table row, which selectionLayer.ts paints by the cell —
+ * Chromium reserves cell-filling selection for a real <table>, and over a grid
+ * it returns bare text rects, so a two-column drag came out as islands with the
+ * cell padding as a gap. `:not()` carries its argument's specificity, so this
+ * is (0,5,1) and wins over the rule above. A Ctrl+/-revealed row is text again
+ * and keeps the native wash. */
+.editor-host .cm-editor .cm-line.md-table-row:not(.md-table-source) ::selection,
+.editor-host .cm-editor .cm-line.md-table-row:not(.md-table-source)::selection {
+  background-color: transparent !important;
+}
+
+/* That layer rides *above* the content, blended: multiply darkens over
+ * the light page, screen lightens over the dark one, and the ink under the
+ * wash stays legible either way — an opaque card face (code block, table
+ * row) can no longer cover it. The caret layer sits at 150, above. z-index
+ * needs !important (CM6 sets an inline z-index on every layer), and
+ * pointer-events must go with the lift: above the content the layer would
+ * otherwise swallow every mousedown that lands on a selection — no
+ * click-to-place-caret, no link clicks. */
+.editor-host .sandy-selection-layer {
+  z-index: 1 !important;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+:root[data-theme="dark"] .editor-host .sandy-selection-layer {
+  mix-blend-mode: screen;
+}
+.editor-host .cm-cursor {
+  border-left: 2.5px solid var(--accent);
+  /* Collapsed lines — a table's alignment row, a frontmatter fence — are a few
+   * pixels tall by design, and CM6 sizes the caret from the line it sits on: a
+   * 1px sliver reads as "the editor lost my caret". A minimum height lets it
+   * overhang those lines instead, which is the honest signal. */
+  min-height: 1.15em;
+  margin-left: -1px;
+}
+
+/* CM6 blinks the caret in hard steps. Sandy breathes it — same 1.2 s beat,
+ * eased through the cm-blink keyframes CM6 already defines, so this is one
+ * timing-function override and no new animation. */
+.editor-host .cm-cursorLayer {
+  animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
+}
+
+/* The blink is the one loop in the product, and it is not ours to shorten —
+ * CM6 owns it, and writes its duration as an *inline* style on this layer, so
+ * the `--dur-*` collapse in index.css slides straight past it. `!important` is
+ * the only author declaration that outranks an inline one: under reduced motion
+ * the caret stops moving entirely and simply stays lit, which is what someone
+ * who asked for less motion wants from the highest-frequency pixel on screen. */
+@media (prefers-reduced-motion: reduce) {
+  .editor-host .cm-cursorLayer {
+    animation: none !important;
+  }
+}
+
+/* ─── in-note find bar (Ctrl+F) ──────────────────────────── */
+
+/* the panel floats over the text instead of pushing it down */
+.editor-host .cm-editor .cm-panels {
+  position: absolute;
+  top: 48px;
+  right: 20px;
+  left: auto;
+  z-index: 90;
+  border: none;
+  background: transparent;
+}
+
+.find-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 5px 4px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 14px 40px -12px color-mix(in srgb, var(--ink) 34%, transparent);
+  font-family: var(--font-ui);
+  animation: find-pop var(--dur-snap) var(--ease-out);
+}
+
+@keyframes find-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.985);
+  }
+}
+
+/* the chevron + a column of one (find) or two (find/replace) rows */
+.find-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.find-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.find-replace-row {
+  margin-top: 2px;
+  padding-top: 2px;
+  border-top: 1px solid var(--border);
+}
+
+.find-btn.find-btn-text {
+  width: auto;
+  padding: 0 8px;
+  font: 11.5px var(--font-ui);
+  white-space: nowrap;
+}
+
+/* No `outline: none` here any more — the ring in index.css is the answer that
+ * declaration was standing in for. Same for the placeholder: it is a sentence
+ * the user reads, so it sits on --ink-soft, not on the incidental faint. */
+.find-input {
+  width: 190px;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: 13px var(--font-ui);
+  padding: 3px 0;
+}
+
+.find-input::placeholder {
+  color: var(--ink-soft);
+}
+
+.find-count {
+  flex-shrink: 0;
+  margin: 0 6px 0 8px;
+  color: var(--ink-faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.find-btn {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  padding: 0;
+  transition:
+    background-color var(--dur-quick) var(--ease-out),
+    color var(--dur-quick) var(--ease-out);
+}
+
+.find-btn:hover {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  color: var(--ink);
+}
+
+/* match highlighting — same accent wash as the overlays' <mark>.
+ * Stepping between matches reads as one wash travelling, not two blinks. */
+.editor-host .cm-content .cm-searchMatch {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 2px;
+  transition: background-color var(--dur-quick) var(--ease-out);
+}
+
+.editor-host .cm-content .cm-searchMatch.cm-searchMatch-selected {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* ─── revealed syntax marks ──────────────────────────────── */
+
+/* Syntax is never on the page uninvited — the caret is not a reveal trigger.
+ * These styles are for the one block a Ctrl+/ opened (revealSource.ts).
+ * A hidden mark is a replace-decoration, so revealing it *creates* the span —
+ * which means one mount animation is the whole effect, no state to track and
+ * nothing dispatched at the editor.
+ *
+ * Opacity only, deliberately: the marks take their width the instant they
+ * exist, so the text settles once and then the ink arrives. Fading the width
+ * in as well would slide the line under the reader's eye for 110 ms.
+ * Decorations already freeze during IME, so this can never fire inside a
+ * composition. */
+.md-mark,
+.md-comment,
+.md-link .md-url {
+  animation: mark-reveal var(--dur-quick) var(--ease-out);
+}
+
+@keyframes mark-reveal {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Revealed markup is quieter than the prose but it is still something the user
+ * deliberately asked to see — --ink-soft, not the incidental faint. */
+.md-mark {
+  color: var(--ink-soft);
+}
+
+/* ─── headings ───────────────────────────────────────────── */
+
+/* The air above a heading is what tells the eye a section ended. The old ladder
+ * spanned 6.8px across all six levels against a 29.75px line — six headings that
+ * barely differed. This is `.print-doc`'s rhythm ported inward (§4: the printed
+ * page has the better one): the same ~3:1 space-above-to-below ratio, scaled to
+ * the body leading instead of to each heading's own size, so an H1 opens with
+ * exactly one blank line of air and an H6 with half of one.
+ * Padding, never margin — a margin on a `.cm-line` is space CM6's height map
+ * never learns about, and everything below it clicks a row off. */
+.md-hline-1 { --h-above: 1.75em; --h-below: 0.55em; }
+.md-hline-2 { --h-above: 1.45em; --h-below: 0.45em; }
+.md-hline-3 { --h-above: 1.2em;  --h-below: 0.38em; }
+.md-hline-4 { --h-above: 1.05em; --h-below: 0.32em; }
+.md-hline-5 { --h-above: 0.95em; --h-below: 0.3em; }
+.md-hline-6 { --h-above: 0.85em; --h-below: 0.28em; }
+
+/* The ladder is applied from one place, at the same weight as the card-spacing
+ * rules further down, so a heading that lands right after a table or a callout
+ * can take `max()` of the two airs instead of silently losing its own.
+ * `balance` is on the line, not on `.md-h1` — that one is a mark decoration
+ * (a span), and balancing is a block-container property. A two-line title
+ * splits evenly instead of leaving one orphaned word under a full line; the
+ * engine caps it at a few lines, which is all a heading ever is. */
+.editor-host .cm-line.md-hline {
+  padding: var(--h-above) 0 var(--h-below);
+  text-wrap: balance;
+}
+
+.md-h1 { font-size: 1.75em; font-weight: 640; line-height: 1.25; letter-spacing: -0.015em; }
+.md-h2 { font-size: 1.42em; font-weight: 620; line-height: 1.3; letter-spacing: -0.01em; }
+.md-h3 { font-size: 1.2em;  font-weight: 620; line-height: 1.35; }
+.md-h4 { font-size: 1.05em; font-weight: 640; }
+.md-h5 { font-size: 1em;    font-weight: 640; }
+.md-h6 { font-size: 1em;    font-weight: 600; color: var(--ink-soft); }
+
+.md-hline .md-mark {
+  font-weight: 400;
+}
+
+/* ─── inline ─────────────────────────────────────────────── */
+
+/* 600, not 700: bold is emphasis inside a sentence and must never out-shout the
+ * title above it, and .md-h1 sits at 640. Source Serif carries 600 as a solid,
+ * unmistakable bold at this size — the old 700 only bought loudness. */
+.md-strong { font-weight: 600; }
+.md-em { font-style: italic; }
+.md-strike {
+  text-decoration: line-through;
+  text-decoration-color: var(--ink-faint);
+  color: var(--ink-soft);
+}
+
+.md-mono {
+  font-family: var(--font-mono);
+}
+
+/* ==highlight== — a stroke of warm marker */
+.md-highlight {
+  background: var(--highlight-bg);
+  border-radius: 3px;
+  padding: 0.02em 0.12em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* Inline code pill: the content segment only, so hidden backticks leave a clean
+ * pill. Descendant, not compound — the mark decoration spans the whole node and
+ * the highlighter's .md-mono spans the text inside it, so CM6 nests them and
+ * never lands both classes on one element. Written as `.md-inline-code.md-mono`
+ * the rule matched nothing at all, and inline code rendered as full-size mono
+ * with no pill. */
+.md-inline-code .md-mono {
+  font-size: 0.82em;
+  background: var(--code-bg);
+  border-radius: 4px;
+  padding: 0.1em 0.32em;
+  /* a pill that wraps keeps its ends on both fragments */
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.md-inline-code .md-mark {
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+}
+
+.md-link {
+  color: var(--accent-ink);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, var(--accent-ink) 35%, transparent);
+}
+/* The URL you read *beside* a label under Ctrl+/ — quiet, and it fades in with
+ * the rest of that reveal (the rule above is scoped to that nesting for exactly
+ * this reason: a bare URL is never revealed, it is simply always there). */
+.md-url { color: var(--ink-soft); }
+
+/* A bare https://… — and the address inside <…> — is the link *and* its own
+ * label, so it wears what every other link wears. Deliberately after .md-url:
+ * the highlighter tags the very same characters, and this is the declaration
+ * that has to win whichever way the two spans end up nested. */
+.md-autolink {
+  color: var(--accent-ink);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, var(--accent-ink) 35%, transparent);
+}
+.md-autolink .md-url {
+  color: inherit;
+}
+
+.md-wikilink {
+  color: var(--accent-ink);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, var(--accent-ink) 45%, transparent);
+}
+
+/* a link answers the pointer before it's clicked: the rule under it inks in */
+.md-link,
+.md-autolink,
+.md-wikilink {
+  transition: text-decoration-color var(--dur-quick) var(--ease-out);
+}
+.md-link:hover,
+.md-autolink:hover,
+.md-wikilink:hover {
+  text-decoration-color: var(--accent-ink);
+}
+
+/* %%comment%% — only ever seen under a Ctrl+/ reveal; the rest of the time it
+ * isn't on the page at all (but never leaves the file). The italic is the whole
+ * signal now: a 0.6 opacity on top of it took the ink down to 2.35 against the
+ * page, and text you explicitly asked to see should be readable. */
+.md-comment {
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+/* target doesn't resolve in the vault yet — click creates it */
+.md-wikilink-unresolved {
+  color: var(--ink-soft);
+  text-decoration-style: dashed;
+  text-decoration-color: color-mix(in srgb, var(--ink-soft) 45%, transparent);
+}
+
+/* ─── frontmatter (YAML properties) ──────────────────────── */
+
+/* A note's "---" metadata block reads as a quiet properties card — plain
+ * YAML on disk, rendered calm, and it stays a card while you type in it.
+ * Ctrl+/ opens the whole card back to raw YAML. */
+.editor-host .cm-line.md-frontmatter {
+  background: color-mix(in srgb, var(--ink) 3.5%, transparent);
+  border-inline: 1px solid var(--rule);
+  padding: 0.08em 1.1em;
+  font-family: var(--font-ui);
+  font-size: 0.88em;
+  line-height: 1.95;
+  /* The values are the note's own metadata — full ink, like any other content.
+   * The hierarchy inside the card is carried by the keys stepping back to
+   * --ink-soft below, which is a difference you can read at 0.88em. */
+  color: var(--ink);
+}
+
+/* No vertical margins here either: they read as 0 while the fences are
+ * collapsed (font-size: 0 below), but the moment the caret lands on a fence the
+ * class drops, the margin becomes real, and every line under the card shifts
+ * out from under CM6's height map. */
+.editor-host .cm-line.md-frontmatter-first {
+  border-top: 1px solid var(--rule);
+  border-radius: 9px 9px 0 0;
+}
+
+.editor-host .cm-line.md-frontmatter-last {
+  border-bottom: 1px solid var(--rule);
+  border-radius: 0 0 9px 9px;
+}
+
+/* the "---" fences collapse to the card's rounded caps (mirrors the table
+ * divider trick); the class is dropped under a Ctrl+/ reveal, so the fence
+ * springs back to an editable "---". */
+.editor-host .cm-line.md-frontmatter-rule {
+  min-height: 0;
+  height: 0.55em;
+  padding-block: 0;
+  font-size: 0;
+  line-height: 0;
+  overflow: hidden;
+}
+
+.md-frontmatter-key {
+  color: var(--ink-soft);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* ─── lists & tasks ──────────────────────────────────────── */
+
+.md-list-mark {
+  color: var(--accent);
+}
+
+/* Wrapped list items hang under their own text rather than under the marker.
+ * --md-hang is measured per line in livePreview.ts; the negative text-indent
+ * pulls only the first visual line back out to the marker column. */
+.editor-host .cm-line.md-listline {
+  padding-left: var(--md-hang, 0);
+  text-indent: calc(-1 * var(--md-hang, 0));
+}
+
+.md-task {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  border: 1.5px solid var(--ink-faint);
+  border-radius: 4px;
+  margin-right: 0.5em;
+  vertical-align: -0.15em;
+  cursor: pointer;
+  position: relative;
+}
+.md-task-checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+/* Ticking a box is the one place in a note where the user *does* something
+ * rather than writes it — the box gives a small nod back. .md-anim is worn
+ * only by widgets mounted at an edit moment (widgets.ts), so this fires once
+ * per tick and never when scrolling rebuilds off-viewport DOM. */
+.md-task-checked.md-anim {
+  animation: task-fill var(--dur-base) var(--ease-out);
+}
+.md-task-checked::after {
+  content: "";
+  position: absolute;
+  left: 0.28em;
+  top: 0.08em;
+  width: 0.3em;
+  height: 0.55em;
+  border: solid var(--bg);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.md-task-checked.md-anim::after {
+  animation: task-tick var(--dur-base) var(--ease-out);
+}
+
+@keyframes task-fill {
+  from { transform: scale(0.8); }
+  55% { transform: scale(1.09); }
+}
+
+@keyframes task-tick {
+  from { opacity: 0; transform: rotate(45deg) scale(0.3); }
+  60% { opacity: 1; transform: rotate(45deg) scale(1.14); }
+  to { opacity: 1; transform: rotate(45deg) scale(1); }
+}
+.md-done {
+  color: var(--ink-faint);
+  text-decoration: line-through;
+}
+
+/* ─── blockquote ─────────────────────────────────────────── */
+
+.md-quote {
+  border-left: 3px solid color-mix(in srgb, var(--accent) 40%, var(--rule));
+  padding-left: 1em;
+  color: var(--ink-soft);
+}
+
+/* callouts — "> [!note] Title" (Obsidian syntax) as calm accented asides */
+/* The default (untyped) callout borrows --accent-ink rather than --accent: the
+ * accent is a *mark* colour — caret, list bullets, the tree rail — and at 3.31
+ * against its own tinted card it could not carry a title, which is prose. The
+ * typed callouts below all sit on code tokens, which the palette pass moved
+ * past 4.5 for the same reason. */
+.editor-host .cm-line.md-callout {
+  --callout-accent: var(--accent-ink);
+  border-left-color: var(--callout-accent);
+  background: color-mix(in srgb, var(--callout-accent) 7%, transparent);
+}
+
+.editor-host .cm-line.md-callout-info    { --callout-accent: var(--tok-func); }
+.editor-host .cm-line.md-callout-tip     { --callout-accent: var(--tok-string); }
+.editor-host .cm-line.md-callout-warning { --callout-accent: var(--tok-keyword); }
+.editor-host .cm-line.md-callout-danger  { --callout-accent: var(--danger); }
+.editor-host .cm-line.md-callout-quote   { --callout-accent: var(--ink-soft); }
+
+.editor-host .cm-line.md-callout-title {
+  padding-top: 0.3em;
+  border-radius: 0 8px 0 0;
+  font-weight: 640;
+  color: var(--callout-accent);
+}
+
+.editor-host .cm-line.md-callout-last {
+  padding-bottom: 0.3em;
+  border-radius: 0 0 8px 0;
+}
+
+.editor-host .cm-line.md-callout-title.md-callout-last {
+  border-radius: 0 8px 8px 0;
+}
+
+.md-callout-label {
+  font-weight: 640;
+}
+
+/* tables */
+
+.editor-host .cm-line.md-table-row {
+  display: grid;
+  grid-template-columns: var(--md-table-template);
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 2.45em;
+  overflow: hidden;
+  /* Gridlines carry the table's structure, and --border's 1.24 against the page
+   * left them barely there — --rule is the same warm line at 3:1. The *column*
+   * dividers are a gradient composed in livePreview.ts, which names --rule too. */
+  border-inline: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  background-color: color-mix(in srgb, var(--bg) 94%, var(--codeblock-bg));
+  background-image: var(--md-table-dividers, none);
+  font-family: var(--font-ui);
+  font-size: 0.9em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+  transition: background-color var(--dur-quick) var(--ease-out);
+}
+
+.editor-host .cm-line.md-table-header {
+  border-top: 1px solid var(--rule);
+  border-radius: 8px 8px 0 0;
+  background-color: var(--codeblock-bg);
+  color: var(--ink);
+}
+
+.editor-host .cm-line.md-table-row-last {
+  border-radius: 0 0 8px 8px;
+}
+
+.editor-host .cm-line.md-table-header.md-table-row-last {
+  border-radius: 8px;
+}
+
+.editor-host .cm-line.md-table-row:not(.md-table-header):hover {
+  background-color: color-mix(in srgb, var(--codeblock-bg) 58%, var(--bg));
+}
+
+/* Under a Ctrl+/ reveal the rows show their raw Markdown inside the same box:
+ * the grid steps aside, the card, face and height stay. Putting the caret in a
+ * cell does not do this — the table stays a table while you type in it. */
+.editor-host .cm-line.md-table-row.md-table-source {
+  display: block;
+  padding: 0.52em 0.72em;
+  background-image: none;
+}
+
+.md-table-cell {
+  grid-row: 1;
+  min-width: 0;
+  padding: 0.52em 0.72em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.md-table-header .md-table-cell {
+  font-weight: 650;
+  letter-spacing: 0.005em;
+}
+
+.md-table-cell-center { text-align: center; }
+.md-table-cell-right { text-align: right; }
+
+/* The air around the card sits on the lines either side of it, as padding.
+ * A margin on a .cm-line is invisible to CM6 — it sizes every line from its
+ * border box and assumes lines stack flush — so a margin here silently offsets
+ * the caret geometry of everything below it. The values are the table row's
+ * old 1em / 1.1em at its 0.9em font, in the 17px body face of the neighbour. */
+.editor-host .cm-line.md-space-before-table {
+  padding-bottom: max(15px, var(--h-below, 0px));
+}
+
+.editor-host .cm-line.md-space-after-table {
+  padding-top: max(17px, var(--h-above, 0px));
+}
+
+.editor-host .cm-line.md-space-after-callout {
+  padding-top: max(7px, var(--h-above, 0px));
+}
+
+/* A setext heading's underline row carries nothing once its ===/--- is hidden,
+ * and left at its natural height it opens a blank line under every such title.
+ * Collapsed like the alignment row below it, so the only air under the heading
+ * is the --h-below the ladder already gives it. The caret's own min-height
+ * (see .cm-cursor) keeps it visible when it lands here. */
+.editor-host .cm-line.md-setext-rule {
+  height: 0;
+  min-height: 0;
+  overflow: hidden;
+  font-size: 0;
+  line-height: 0;
+  padding-block: 0;
+}
+
+.editor-host .cm-line.md-table-divider {
+  height: 0;
+  min-height: 0;
+  overflow: hidden;
+  font-size: 0;
+  line-height: 0;
+}
+
+/* ─── code blocks ────────────────────────────────────────── */
+
+.md-codeblock {
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  line-height: 1.65;
+  background: var(--codeblock-bg);
+  padding: 0 16px;
+}
+.md-codeblock-first {
+  border-radius: 8px 8px 0 0;
+  padding-top: 8px;
+}
+.md-codeblock-last {
+  border-radius: 0 0 8px 8px;
+  padding-bottom: 8px;
+}
+.md-codeinfo {
+  color: var(--ink-soft);
+}
+
+/* With its ``` hidden, a fence line is one of two things. Carrying nothing, it
+ * *is* the card's edge — 10px of top or bottom cap, which is where the padding
+ * above went; carrying an info string, it is the card's label, and that string
+ * is the only part of a fence that ever meant anything. Heights on a `.cm-line`,
+ * never margins: CM6 sizes a line from its border box and reads these back like
+ * any other line (the caret's own min-height keeps it visible on a capped one). */
+.editor-host .cm-line.md-codeblock-cap {
+  height: 10px;
+  min-height: 0;
+  padding-block: 0;
+  font-size: 0;
+  line-height: 0;
+  overflow: hidden;
+}
+
+.editor-host .cm-line.md-codeblock-label {
+  padding-top: 7px;
+  padding-bottom: 1px;
+  font-size: 11px;
+  line-height: 1.4;
+  letter-spacing: 0.05em;
+}
+
+/* ─── widgets ────────────────────────────────────────────── */
+
+.md-image {
+  display: inline-block;
+  width: 100%;
+}
+/* `height: auto` is load-bearing, not tidiness: widgets.ts stamps the natural
+ * width/height so the box is reserved before the file decodes, and without it
+ * a wide picture would keep its full pixel height while max-width shrank it. */
+.md-image img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0.4em auto;
+  border-radius: 8px;
+}
+/* the picture develops rather than pops in — its box is already reserved,
+ * so nothing under it moves; edit-moment only, never on scroll re-entry */
+.md-image.md-anim img {
+  animation: image-develop var(--dur-calm) var(--ease-soft);
+}
+
+@keyframes image-develop {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+}
+
+.md-hr {
+  display: inline-block;
+  width: 100%;
+  height: 0.75em;
+  /* a rule the author typed on purpose — --rule, not the chrome hairline */
+  border-bottom: 1px solid var(--rule);
+  vertical-align: middle;
+}
+/* the rule draws itself outward when typed or when its Ctrl+/ reveal closes */
+.md-hr.md-anim {
+  animation: hr-draw var(--dur-base) var(--ease-soft);
+}
+
+@keyframes hr-draw {
+  from {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+}
+
+/* ─── code tokens (calm, warm) ───────────────────────────── */
+
+.tok-keyword { color: var(--tok-keyword); }
+.tok-string  { color: var(--tok-string); }
+.tok-comment { color: var(--tok-comment); font-style: italic; }
+.tok-atom    { color: var(--tok-atom); }
+.tok-func    { color: var(--tok-func); }
+.tok-type    { color: var(--tok-type); }
+.tok-prop    { color: var(--tok-prop); }
+.tok-op      { color: var(--tok-op); }
+
+/* ─── Windows high contrast ──────────────────────────────── */
+
+/* Forced colours throw away every author background, which is fine for a card
+ * face and fatal for anything whose whole meaning *is* a fill. Two things here
+ * are that: a ticked checkbox (it went back to looking unticked — the state was
+ * gone, not just restyled) and the selection wash. System keywords are the one
+ * palette forced mode honours, so both are re-stated in them. */
+@media (forced-colors: active) {
+  .md-task {
+    border-color: CanvasText;
+  }
+  .md-task-checked {
+    background: Highlight;
+    border-color: Highlight;
+  }
+  .md-task-checked::after {
+    border-color: HighlightText;
+  }
+  /* selectionLayer.ts paints these rects above the content (multiply/screen);
+   * without a forced colour they compose to nothing at all */
+  .editor-host .cm-selectionBackground,
+  .editor-host .cm-editor.cm-focused .cm-selectionBackground {
+    background: Highlight !important;
+  }
+}

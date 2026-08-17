@@ -1,0 +1,183 @@
+@import "tailwindcss";
+/* `standard`, not the bare package entry: that one resolves to the wght-only
+   build, and Source Serif 4 is a two-axis font (opsz 8-60 alongside wght
+   200-900). Without this the 30px h1 and the 11px code label are drawn with
+   the same 14pt text cut, and `font-optical-sizing: auto` — already the CSS
+   initial value — has no axis to act on. Costs ~128KB, all bundled. */
+@import "@fontsource-variable/source-serif-4/standard.css";
+@import "@fontsource-variable/jetbrains-mono";
+/* The italic faces, which have to be asked for by name too. Neither file above
+   contains a single `font-style: italic`, and per CSS Fonts 4 a synthesized
+   oblique counts as existing *within the family* — so there is no fall-through
+   to Georgia to notice: Chromium just shears the roman, and every *emphasis*,
+   %%comment%% and code comment in the app has been drawn with a machine slant.
+   JetBrains Mono's true italic is a different design, not a tilt. Same builds
+   as their romans (`standard` keeps opsz; JBM is wght-only), so the axes match.
+   Costs 541KB on disk — the subsets are unicode-range gated, so this is
+   installer bytes, not fetches. Cheaper sets exist only by hand-writing the
+   @font-face blocks, which would drift from the package on the next upgrade
+   and leave Greek and latin-ext quietly synthesized again. */
+@import "@fontsource-variable/source-serif-4/standard-italic.css";
+@import "@fontsource-variable/jetbrains-mono/wght-italic.css";
+
+:root {
+  /* warm sand light theme — palette drawn from sample-cover.svg
+     (sky #f2e8dc→#d9b8a5, hills #c9a28e/#b98f7b and #a97f6c/#96705f).
+     Every value below is a computed contrast against the surface it lands on,
+     not a guess: prose ≥ 4.5, affordances ≥ 3.0 (an audit found the light theme
+     had never had the pass the dark one did — 7 of 7 code tokens and 5 of 6
+     callout titles were failing). The hues are the ones the dunes already had;
+     only their depth moved. */
+  --bg: #f8f1e6;
+  --ink: #2b241c;
+  --ink-soft: #756654; /* 4.94 — prose: quotes, H6, the frontmatter card, chrome */
+  --ink-faint: #8f8069; /* 3.43 — incidental UI only, never a sentence */
+  --accent: #a5745e;
+  --accent-ink: #8c5f4b;
+  /* a panel that floats has to be lighter than the page it floats over;
+     five of them used to paint themselves in --bg and simply merged with it */
+  --surface: #fdf9f2;
+  --code-bg: #f1e7d6;
+  --codeblock-bg: #f3ead9;
+  --border: #e6d9c4; /* chrome hairlines: panel edges, separators, scrollbars */
+  --rule: #a08560; /* 3.10 — lines the reader must see: table grid, <hr>, cards */
+  --selection: #ead7c2;
+  --highlight-bg: #f2dfae;
+  --danger: #b53326;
+
+  --tok-keyword: #9c5232;
+  --tok-string: #556a3e;
+  --tok-comment: #6d6557;
+  --tok-atom: #7d5c88;
+  --tok-func: #4c687d;
+  --tok-type: #856233;
+  --tok-prop: #4c687d;
+  --tok-op: var(--ink-soft);
+
+  --font-prose: "Source Serif 4 Variable", Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono Variable", Consolas, monospace;
+  --font-ui: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+
+  /* ─── motion ───────────────────────────────────────────────
+   * One vocabulary for every animation in the app, so nothing moves
+   * on its own private curve. Two easings only: `--ease-out` is the
+   * house curve (things arriving), `--ease-soft` is its calmer sibling
+   * (things settling over a longer beat).
+   * Reduced motion collapses the durations in one place below — any
+   * animation written with these tokens is accessible by construction. */
+  --ease-out: cubic-bezier(0.2, 0.9, 0.3, 1);
+  --ease-soft: cubic-bezier(0.25, 0.6, 0.2, 1);
+
+  --dur-quick: 110ms; /* syntax marks, hovers — must never feel laggy */
+  --dur-snap: 150ms; /* menus, popovers */
+  --dur-base: 210ms; /* panels, tree unfolds */
+  --dur-calm: 300ms; /* the document itself, theme cross-fade */
+
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  /* warm ember dark theme — the same landscape after sundown.
+     Base is warm charcoal (not brown soup); text contrast ~14:1,
+     secondary ~7:1; accent = clean ember amber. */
+  --bg: #211d1a;
+  --ink: #f0e9dd;
+  --ink-soft: #b3a692;
+  --ink-faint: #8a7d6a; /* 4.16 — lifted from 3.42 so it keeps its footing on --surface */
+  --accent: #d9a583;
+  --accent-ink: #e2b391;
+  --surface: #2c2723;
+  --code-bg: #2b2521;
+  --codeblock-bg: #282320;
+  --border: #3a332c;
+  --rule: #7d7164; /* 3.50 */
+  --selection: #4a3b2d;
+  --highlight-bg: #5a4520;
+  --danger: #e06a5a;
+
+  --tok-keyword: #d89a70;
+  --tok-string: #a8bd8b;
+  --tok-comment: #9a8e7d; /* was 3.34 — the one token the dark pass had missed */
+  --tok-atom: #b89bd1;
+  --tok-func: #96b4d1;
+  --tok-type: #d1ad77;
+  --tok-prop: #96b4d1;
+  --tok-op: var(--ink-soft);
+
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  /* The window itself never scrolls — every scroll lives in an inner container
+   * (cm-scroller, sidebar-tree, overlay-list). Without this, any transient
+   * transform (doc-arrive's 7px rise) overflows the viewport and WebView2
+   * flashes a native scrollbar at the window edge for the animation's beat. */
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
+}
+
+/* Sandy draws its own focus ring. Chromium's default is a blue-black halo that
+ * belongs to no theme in this app, and every input in the tree used to answer it
+ * with `outline: none` — which left the keyboard with nothing at all. One warm
+ * ring, everywhere, in the accent both palettes already own (3.56 light / 7.70
+ * dark, past the 3:1 floor either way). `:focus-visible` rather than `:focus`,
+ * so a click never lights it: the browser reserves it for keyboard arrivals —
+ * and for text fields, which are always treated as keyboard-focused, and where
+ * a ring is honest anyway. The outline follows each element's own border-radius,
+ * so nothing here needs to know a shape. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A theme switch cross-fades the whole window as one compositor snapshot
+ * (App.tsx runs the flip inside a view transition). Everything comes with it —
+ * shadows, gradient fills, blend modes, icons, the native scrollbars — and no
+ * element repaints, which is what the property-by-property fade below could
+ * never do. --dur-calm is 1ms under reduced motion, so this switches off with
+ * the rest of the motion system. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--dur-calm);
+  animation-timing-function: var(--ease-soft);
+}
+
+/* Fallback for a runtime without view transitions: the colour properties fade
+ * on their own. The class rides for a single beat (App.tsx) so no element
+ * carries a permanent paint transition. */
+html.is-theme-shifting,
+html.is-theme-shifting *,
+html.is-theme-shifting *::before,
+html.is-theme-shifting *::after {
+  transition:
+    background-color var(--dur-calm) var(--ease-soft),
+    border-color var(--dur-calm) var(--ease-soft),
+    color var(--dur-calm) var(--ease-soft),
+    fill var(--dur-calm) var(--ease-soft),
+    stroke var(--dur-calm) var(--ease-soft) !important;
+}
+
+/* The whole motion system, switched off from one place. Colour fades are
+ * left alone — they carry no movement. Stagger delays (tree unfold, corner
+ * panel) are literal ms values by design, so they need their own kill. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-quick: 1ms;
+    --dur-snap: 1ms;
+    --dur-base: 1ms;
+    --dur-calm: 1ms;
+  }
+  * {
+    animation-delay: 0ms !important;
+    transition-delay: 0ms !important;
+  }
+}
