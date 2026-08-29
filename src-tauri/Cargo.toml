@@ -1,6 +1,6 @@
 [package]
 name = "sandy"
-version = "1.0.0"
+version = "1.1.0"
 description = "Design-led Markdown app for Windows"
 authors = ["dennicax"]
 license = "MIT"
