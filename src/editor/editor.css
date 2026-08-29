@@ -13,6 +13,14 @@
 .editor-host {
   height: 100%;
   overflow: hidden;
+  /* The scroll area starts below the fixed titlebar (the sidebar already does
+   * this): without it the scrollbar's top 40px ran under the opaque bar, so
+   * the thumb on every long note emerged chopped from beneath the window
+   * controls. Balanced by .cm-content's 44px top padding (was 84) and the find
+   * panel's 8px top (was 48) — same resting geometry, same screen positions.
+   * Typewriter centring reads live scroller geometry and now centres in the
+   * truly visible area. */
+  padding-top: 40px;
   /* Opening a note remounts the editor, so this fires once per arrival: the
    * page settles in rather than blinking into place. A uniform translate of
    * the whole host is measurement-safe — CM6 reads scroller-vs-content rect
@@ -83,12 +91,25 @@
 .editor-host .cm-content {
   max-width: 35rem;
   margin: 0 auto;
-  padding: 84px 0 45vh;
+  /* 44px + the host's 40px titlebar clearance = the same 84px resting air */
+  padding: 44px 0 45vh;
   caret-color: var(--accent);
 }
 
 .editor-host .cm-line {
   padding: 0;
+}
+
+/* The OS spellchecker's stock squiggle is a loud alien red on this warm page.
+ * Restating it through the palette keeps the signal and drops the shout —
+ * NO_SPELL (livePreview.ts) already keeps it off everything that isn't prose. */
+.editor-host ::spelling-error {
+  /* longhands: Chromium drops the `text-decoration` shorthand with a
+   * color-mix() color inside a highlight pseudo — verified in the CSSOM */
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: color-mix(in srgb, var(--danger) 60%, transparent);
+  text-decoration-thickness: 1px;
 }
 
 /* focus mode: paragraphs away from the caret recede, gently */
@@ -150,7 +171,11 @@
   mix-blend-mode: screen;
 }
 .editor-host .cm-cursor {
-  border-left: 2.5px solid var(--accent);
+  /* 2px, not 2.5: CM6 places the caret at fractional x, and a fractional width
+   * on a fractional position rasterizes as 2-or-3 device pixels depending on
+   * column — the most-looked-at pixel on screen visibly changed weight as it
+   * moved (s56 #C1). An even width keeps the weight steady at every DPR. */
+  border-left: 2px solid var(--accent);
   /* Collapsed lines — a table's alignment row, a frontmatter fence — are a few
    * pixels tall by design, and CM6 sizes the caret from the line it sits on: a
    * 1px sliver reads as "the editor lost my caret". A minimum height lets it
@@ -183,7 +208,9 @@
 /* the panel floats over the text instead of pushing it down */
 .editor-host .cm-editor .cm-panels {
   position: absolute;
-  top: 48px;
+  /* 8px inside an editor that now starts 40px down = screen y 48, where the
+   * save banner (fixed, 48px) still lines up beside it */
+  top: 8px;
   right: 20px;
   left: auto;
   z-index: 90;
@@ -255,7 +282,10 @@
 .find-count {
   flex-shrink: 0;
   margin: 0 6px 0 8px;
-  color: var(--ink-faint);
+  /* --ink-soft, not faint: this span also carries "No matches" — a sentence the
+   * user reads, and the palette invariant keeps read text on soft or darker.
+   * The "3 / 14" count rides along one step louder, which costs nothing. */
+  color: var(--ink-soft);
   font-size: 11.5px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
@@ -292,6 +322,12 @@
 
 .editor-host .cm-content .cm-searchMatch.cm-searchMatch-selected {
   background: color-mix(in srgb, var(--accent) 45%, transparent);
+  /* A cue that is not a background: native ::selection paints opaque over any
+   * wash, so with the editor focused (F3/Ctrl+G stepping) the current match's
+   * deeper wash was fully covered — measured 1.02:1 against the other matches
+   * (s56 #K1). The outline survives the overpaint; "you are here" always reads. */
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* ─── revealed syntax marks ──────────────────────────────── */
@@ -546,7 +582,9 @@
   display: inline-block;
   width: 1em;
   height: 1em;
-  border: 1.5px solid var(--ink-faint);
+  /* 1px, not 1.5: a fractional border antialiases into a mushy 2px gray ring
+   * at DPR 1 on every unchecked box (s56 #C2). */
+  border: 1px solid var(--ink-faint);
   border-radius: 4px;
   margin-right: 0.5em;
   vertical-align: -0.15em;
@@ -590,7 +628,10 @@
   to { opacity: 1; transform: rotate(45deg) scale(1); }
 }
 .md-done {
-  color: var(--ink-faint);
+  /* --ink-soft, not faint: struck text is still read, and read text sits on
+   * soft or darker (the palette invariant — faint measured 3.43:1 in light).
+   * The line-through alone already says "done". */
+  color: var(--ink-soft);
   text-decoration: line-through;
 }
 
@@ -611,7 +652,10 @@
 .editor-host .cm-line.md-callout {
   --callout-accent: var(--accent-ink);
   border-left-color: var(--callout-accent);
-  background: color-mix(in srgb, var(--callout-accent) 7%, transparent);
+  /* 6%, not 7: at 7% the light default title measured 4.45:1 and the danger
+   * body 4.46 — a hair under the 4.5 floor the palette invariant sets. One
+   * point of tint clears every pair in both themes (s56 #K5, computed). */
+  background: color-mix(in srgb, var(--callout-accent) 6%, transparent);
 }
 
 .editor-host .cm-line.md-callout-info    { --callout-accent: var(--tok-func); }
@@ -651,16 +695,14 @@
   overflow: hidden;
   /* Gridlines carry the table's structure, and --border's 1.24 against the page
    * left them barely there — --rule is the same warm line at 3:1. The *column*
-   * dividers are a gradient composed in livePreview.ts, which names --rule too. */
+   * dividers are painted by the cells below, which name --rule too. */
   border-inline: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
   background-color: color-mix(in srgb, var(--bg) 94%, var(--codeblock-bg));
-  background-image: var(--md-table-dividers, none);
   font-family: var(--font-ui);
   font-size: 0.9em;
   font-variant-numeric: tabular-nums;
   line-height: 1.45;
-  transition: background-color var(--dur-quick) var(--ease-out);
 }
 
 .editor-host .cm-line.md-table-header {
@@ -678,9 +720,10 @@
   border-radius: 8px;
 }
 
-.editor-host .cm-line.md-table-row:not(.md-table-header):hover {
-  background-color: color-mix(in srgb, var(--codeblock-bg) 58%, var(--bg));
-}
+/* No row hover: the shift measured 1.03:1 — invisible as a reading aid — and
+ * rows are not clickable, so visible feedback would promise an interaction
+ * that doesn't exist. Dropping it also drops a per-row repaint on mouse
+ * travel (s56 #K11). */
 
 /* Under a Ctrl+/ reveal the rows show their raw Markdown inside the same box:
  * the grid steps aside, the card, face and height stay. Putting the caret in a
@@ -688,15 +731,28 @@
 .editor-host .cm-line.md-table-row.md-table-source {
   display: block;
   padding: 0.52em 0.72em;
-  background-image: none;
 }
 
+/* Column dividers live on the cells so a line can only sit on a track edge the
+ * grid actually resolved — a gradient positioned from the column *weights*
+ * drifted whenever a floor clamped a track, and the painted line cut through a
+ * neighbouring cell's text. Both neighbours paint the SAME pixel (the first
+ * pixel of the right-hand track): the left cell's outward shadow and the right
+ * cell's inset shadow coincide, so the line is 1px whether one neighbour or
+ * both exist; only a boundary between two absent cells goes unpainted. The
+ * first cell drops the inset (it would double the card's own left border), and
+ * the last cell's outward shadow is clipped by the row's overflow: hidden. */
 .md-table-cell {
   grid-row: 1;
   min-width: 0;
   padding: 0.52em 0.72em;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  box-shadow: 1px 0 var(--rule), inset 1px 0 var(--rule);
+}
+
+.md-table-cell-first {
+  box-shadow: 1px 0 var(--rule);
 }
 
 .md-table-header .md-table-cell {

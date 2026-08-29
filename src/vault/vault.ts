@@ -84,6 +84,10 @@ export interface DeleteResult {
   /** Attachments that went to the trash with the note (vault-rel paths):
    * inside its own `attachments/` folder, used by it, used by nothing else. */
   trashed: string[];
+  /** Why the attachment sweep's answer is incomplete, when it is — a
+   * stand-down (unreadable note, capped scan) or attachments that refused to
+   * move. Null when `trashed` is the whole truth. */
+  sweep_skipped: string | null;
   /** Why the deletion isn't in version history, when it isn't. */
   git_error: string | null;
 }

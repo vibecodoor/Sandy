@@ -29,7 +29,7 @@ const MAX_ZIP_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 pub async fn convert_file_to_markdown(path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || convert_inner(&path))
         .await
-        .map_err(|e| format!("join: {e}"))?
+        .map_err(|e| e.to_string())?
 }
 
 fn convert_inner(path: &str) -> Result<String, String> {
@@ -76,7 +76,7 @@ pub fn encoding_name(bytes: &[u8]) -> &'static str {
 
 /// Read a file with automatic encoding detection (UTF-8/16 BOM, else chardetng).
 fn read_with_encoding(path: &str) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+    let bytes = std::fs::read(path).map_err(|e| format!("Couldn't read the file — {}.", crate::plain_os_error(&e)))?;
     let (encoding, skip) = detect_encoding(&bytes);
     let (text, _, _) = encoding.decode(&bytes[skip..]);
     Ok(text.into_owned())
@@ -85,15 +85,15 @@ fn read_with_encoding(path: &str) -> Result<String, String> {
 // ── DOCX → Markdown (ZIP of XML) ────────────────────────────────────────────
 
 fn convert_docx(path: &str) -> Result<String, String> {
-    let file = std::fs::File::open(path).map_err(|e| format!("open {path}: {e}"))?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("not a valid DOCX: {e}"))?;
+    let file = std::fs::File::open(path).map_err(|e| format!("Couldn't open the file — {}.", crate::plain_os_error(&e)))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|_| "It doesn't look like a valid DOCX file.".to_string())?;
     let mut xml = String::new();
     archive
         .by_name("word/document.xml")
-        .map_err(|e| format!("no document.xml in DOCX: {e}"))?
+        .map_err(|_| "The DOCX has no document inside it.".to_string())?
         .take(MAX_ZIP_ENTRY_BYTES)
         .read_to_string(&mut xml)
-        .map_err(|e| format!("read DOCX: {e}"))?;
+        .map_err(|e| format!("Couldn't read the document inside it — {}.", crate::plain_os_error(&e)))?;
     docx_xml_to_markdown(&xml)
 }
 
@@ -211,7 +211,7 @@ fn docx_xml_to_markdown(xml: &str) -> Result<String, String> {
                 }
             }
             Ok(Event::Eof) => break,
-            Err(e) => return Err(format!("DOCX XML parse: {e}")),
+            Err(e) => return Err("The document inside it isn't readable XML.".to_string()),
             _ => {}
         }
         buf.clear();
@@ -225,7 +225,7 @@ fn docx_xml_to_markdown(xml: &str) -> Result<String, String> {
 fn convert_html(path: &str) -> Result<String, String> {
     let raw = read_with_encoding(path)?;
     let clean = strip_html_noise(&raw);
-    htmd::convert(&clean).map_err(|e| format!("HTML conversion failed: {e}"))
+    htmd::convert(&clean).map_err(|_| "The HTML couldn't be converted.".to_string())
 }
 
 /// Drop <style>/<script>/<head>/<nav>/<footer>/<noscript> blocks and comments
@@ -267,7 +267,7 @@ fn convert_csv(path: &str) -> Result<String, String> {
 
     let headers: Vec<String> = rdr
         .headers()
-        .map_err(|e| format!("CSV header: {e}"))?
+        .map_err(|_| "The CSV's header row couldn't be read.".to_string())?
         .iter()
         .map(escape_table_cell)
         .collect();
@@ -279,7 +279,7 @@ fn convert_csv(path: &str) -> Result<String, String> {
         out.push('\n');
     }
     for result in rdr.records() {
-        let record = result.map_err(|e| format!("CSV row: {e}"))?;
+        let record = result.map_err(|e| format!("A row in the CSV couldn't be read — {e}."))?;
         let cells: Vec<String> = record.iter().map(escape_table_cell).collect();
         out.push_str(&format!("| {} |\n", cells.join(" | ")));
     }
@@ -291,7 +291,7 @@ fn convert_csv(path: &str) -> Result<String, String> {
 fn convert_xlsx(path: &str) -> Result<String, String> {
     use calamine::{open_workbook_auto, Data, Reader};
 
-    let mut workbook = open_workbook_auto(path).map_err(|e| format!("open spreadsheet: {e}"))?;
+    let mut workbook = open_workbook_auto(path).map_err(|e| format!("Couldn't open the spreadsheet — {e}."))?;
     let mut out = String::new();
     let sheets: Vec<String> = workbook.sheet_names().to_vec();
 
@@ -353,7 +353,7 @@ fn convert_xml_file(path: &str) -> Result<String, String> {
 fn convert_pdf(path: &str) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
     let text = pdf_extract::extract_text_from_mem(&bytes)
-        .map_err(|e| format!("PDF extraction failed: {e}"))?;
+        .map_err(|_| "Couldn't extract this PDF's text.".to_string())?;
     if text.trim().is_empty() {
         return Err("No text found in this PDF (it may be scanned/image-only).".to_string());
     }
@@ -420,7 +420,7 @@ fn clean_pdf_line(line: &str) -> String {
 
 fn convert_pptx(path: &str) -> Result<String, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("open {path}: {e}"))?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("not a valid PPTX: {e}"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|_| "It doesn't look like a valid PPTX file.".to_string())?;
 
     let mut slides: Vec<String> = Vec::new();
     for i in 0..archive.len() {
@@ -443,7 +443,7 @@ fn convert_pptx(path: &str) -> Result<String, String> {
         let mut xml = String::new();
         archive
             .by_name(slide)
-            .map_err(|e| format!("read {slide}: {e}"))?
+            .map_err(|_| "Couldn't read a slide inside it.".to_string())?
             .take(MAX_ZIP_ENTRY_BYTES)
             .read_to_string(&mut xml)
             .map_err(|e| format!("read PPTX: {e}"))?;

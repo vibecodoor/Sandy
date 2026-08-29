@@ -53,16 +53,14 @@ fn plain_os_error(e: &std::io::Error) -> String {
 
 /// Why a note wouldn't open, in words someone can act on. A missing note, a
 /// locked one and one that isn't text used to fail identically — as nothing.
-fn unreadable(path: &Path, e: &std::io::Error) -> String {
-    let name = note_name(path);
+/// No name and no verb in here: every surface of a read error already sits
+/// behind an App sentence that says "Couldn't open “name”." — carrying both
+/// again read as a stutter ("Couldn't open “x”. Sandy couldn't open x — …").
+fn unreadable(e: &std::io::Error) -> String {
     match e.kind() {
-        std::io::ErrorKind::NotFound => {
-            format!("{name} isn't there any more — it was moved or deleted.")
-        }
-        std::io::ErrorKind::PermissionDenied => {
-            format!("Sandy couldn't open {name} — Windows refused permission.")
-        }
-        _ => format!("Sandy couldn't open {name} — {}.", plain_os_error(e)),
+        std::io::ErrorKind::NotFound => "It was moved or deleted.".to_string(),
+        std::io::ErrorKind::PermissionDenied => "Windows refused permission.".to_string(),
+        _ => format!("{}.", plain_os_error(e)),
     }
 }
 
@@ -78,14 +76,13 @@ fn why_skipped(e: &std::io::Error) -> String {
 
 fn do_read_doc(path: &str) -> Result<String, String> {
     let p = PathBuf::from(path);
-    let bytes = std::fs::read(&p).map_err(|e| unreadable(&p, &e))?;
+    let bytes = std::fs::read(&p).map_err(|e| unreadable(&e))?;
     // Naming beats decoding: a UTF-16 note opened as text would be re-encoded
     // whole on the first save, and the bytes are the product.
     let text = String::from_utf8(bytes).map_err(|e| {
         format!(
-            "{} isn't UTF-8 text — it looks like {}. Sandy leaves it as it is \
+            "It isn't UTF-8 text — it looks like {}. Sandy leaves it as it is \
              rather than re-encoding the whole file.",
-            note_name(&p),
             convert::encoding_name(e.as_bytes())
         )
     })?;
@@ -210,15 +207,17 @@ fn do_save_doc(path: &str, contents: &str, force: bool) -> Result<(), String> {
     }
 
     sweep_stale_temps(dir);
-    let mut tmp =
-        tempfile::NamedTempFile::new_in(dir).map_err(|e| format!("save {path}: temp: {e}"))?;
+    // every message below is shown as written — plain_os_error strips the
+    // "(os error N)" machine talk the raw Display carries (s51 #33)
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .map_err(|e| format!("save {path}: temp: {}", plain_os_error(&e)))?;
     tmp.write_all(contents.as_bytes())
-        .map_err(|e| format!("save {path}: write: {e}"))?;
+        .map_err(|e| format!("save {path}: write: {}", plain_os_error(&e)))?;
     tmp.as_file()
         .sync_all()
-        .map_err(|e| format!("save {path}: sync: {e}"))?;
+        .map_err(|e| format!("save {path}: sync: {}", plain_os_error(&e)))?;
     tmp.persist(&target)
-        .map_err(|e| format!("save {path}: rename: {e}"))?;
+        .map_err(|e| format!("save {path}: rename: {}", plain_os_error(&e.error)))?;
     remember(&target, contents.as_bytes());
     Ok(())
 }
@@ -237,17 +236,18 @@ fn do_save_attachment(path: &str, bytes: &[u8]) -> Result<(), String> {
     let dir = target
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .ok_or_else(|| format!("attach {path}: no parent directory"))?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("attach {path}: dirs: {e}"))?;
-    let mut tmp =
-        tempfile::NamedTempFile::new_in(dir).map_err(|e| format!("attach {path}: temp: {e}"))?;
+        .ok_or_else(|| "There's no folder to put it in.".to_string())?;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("Couldn't make its folder — {}.", plain_os_error(&e)))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .map_err(|e| format!("{}.", plain_os_error(&e)))?;
     tmp.write_all(bytes)
-        .map_err(|e| format!("attach {path}: write: {e}"))?;
+        .map_err(|e| format!("{}.", plain_os_error(&e)))?;
     tmp.as_file()
         .sync_all()
-        .map_err(|e| format!("attach {path}: sync: {e}"))?;
+        .map_err(|e| format!("{}.", plain_os_error(&e)))?;
     tmp.persist(&target)
-        .map_err(|e| format!("attach {path}: rename: {e}"))?;
+        .map_err(|e| format!("{}.", plain_os_error(&e.error)))?;
     Ok(())
 }
 
@@ -263,7 +263,7 @@ async fn save_attachment(path: String, bytes: Vec<u8>) -> Result<(), String> {
 #[tauri::command]
 async fn copy_attachment(src: String, dest: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let bytes = std::fs::read(&src).map_err(|e| format!("attach {src}: read: {e}"))?;
+        let bytes = std::fs::read(&src).map_err(|e| format!("Couldn't read the dropped file — {}.", plain_os_error(&e)))?;
         do_save_attachment(&dest, &bytes)
     })
     .await
@@ -364,6 +364,42 @@ fn git_anchor_for(file: &Path) -> Option<PathBuf> {
     Some(vault_root_for(file).unwrap_or_else(|| dir.to_path_buf()))
 }
 
+/// `gc.auto=0` on every add/commit means no save ever waits on a repack — so
+/// the repack has to happen somewhere, or loose objects pile up forever (one
+/// commit per autosave). Once per repo per app run, after a successful commit,
+/// spawn `git gc --auto` detached and forget it: with git's default threshold
+/// it is an instant no-op unless objects actually accumulated, and a failure
+/// costs nothing — the next launch tries again. Never awaited: the save path
+/// stays exactly as fast as before. (imba-roadmap §W1.3, second half.)
+fn maybe_repack(root: &Path) {
+    // under `cargo test` a detached gc can outlive the TempDir and hold its
+    // files open on Windows — the tests exercise commits, not compaction
+    if cfg!(test) {
+        return;
+    }
+    static DONE: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
+    let done = DONE.get_or_init(|| Mutex::new(Vec::new()));
+    let Ok(mut roots) = done.lock() else { return };
+    if roots.iter().any(|r| r == root) {
+        return;
+    }
+    roots.push(root.to_path_buf());
+    let mut cmd = std::process::Command::new("git");
+    // autoDetach off: we are already the detachment
+    cmd.arg("-C")
+        .arg(root)
+        .args(["-c", "gc.autoDetach=false", "gc", "--auto", "--quiet"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let _ = cmd.spawn();
+}
+
 /// Stage `paths` (deletions included — `add -A`) and commit them as one
 /// history entry. `anchor` locates the repo; one is initialized there if none
 /// exists. Shared by per-save autocommit and the rename/delete operations.
@@ -445,6 +481,7 @@ fn git_commit_paths(anchor: &Path, paths: &[&str], message: &str) -> Result<(), 
             return Err(format!("git couldn't record this change: {}", git_said(&out)));
         }
     }
+    maybe_repack(&root);
     Ok(())
 }
 
@@ -506,8 +543,16 @@ fn scan_into(base: &Path, dir: &Path, out: &mut Vec<String>, depth: u32, capped:
 /// The scan, plus whether it hit its own caps. A capped list proves nothing
 /// about what the vault does *not* contain — the one caller that reasons from
 /// absence (orphaned_attachments) has to know.
-fn scan_vault_capped(root: &str) -> (Vec<String>, bool) {
+fn scan_vault_capped(root: &str) -> Result<(Vec<String>, bool), String> {
     let base = PathBuf::from(root);
+    /* The one read failure that must speak: the root itself. An unreadable
+     * subfolder stays a quiet skip, but a root Windows refuses (a permission
+     * flip, a vanished network share) used to scan as an empty vault — and the
+     * sidebar then lied "No notes here yet." (s57 #V6). */
+    // reason only — the App prefix already says "Couldn't read this folder."
+    if let Err(e) = std::fs::read_dir(&base) {
+        return Err(format!("{}.", plain_os_error(&e)));
+    }
     // Every scan says which folder the user is treating as a vault; git keeps
     // it as the fallback anchor so history lands in one place (git_anchor_for).
     remember_vault_root(&base);
@@ -515,19 +560,23 @@ fn scan_vault_capped(root: &str) -> (Vec<String>, bool) {
     let mut capped = false;
     scan_into(&base, &base, &mut out, 0, &mut capped);
     out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-    (out, capped)
+    Ok((out, capped))
 }
 
+/// The scan for callers that only *augment* on its answer (the rename walk's
+/// link rewrite, alias collection): an unreadable root reads as no notes, and
+/// the operation simply touches nothing extra. The user-facing surfaces go
+/// through `scan_vault`, which does report it.
 fn do_scan_vault(root: &str) -> Vec<String> {
-    scan_vault_capped(root).0
+    scan_vault_capped(root).map(|(v, _)| v).unwrap_or_default()
 }
 
 /// Relative paths ('/'-separated) of every note under `root`.
 #[tauri::command]
 async fn scan_vault(root: String) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || do_scan_vault(&root))
+    tauri::async_runtime::spawn_blocking(move || scan_vault_capped(&root).map(|(v, _)| v))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?
 }
 
 #[derive(serde::Serialize, Debug, PartialEq)]
@@ -545,15 +594,17 @@ struct SearchResult {
     truncated: bool,
 }
 
-fn do_search_vault(root: &str, query: &str) -> SearchResult {
+fn do_search_vault(root: &str, query: &str) -> Result<SearchResult, String> {
     let needle = query.to_lowercase();
     let mut hits = Vec::new();
     let mut truncated = false;
     if needle.trim().is_empty() {
-        return SearchResult { hits, truncated };
+        return Ok(SearchResult { hits, truncated });
     }
     let base = PathBuf::from(root);
-    'files: for rel in do_scan_vault(root) {
+    // an unreadable root must not read as "No matches." (s57 #V6)
+    let (files, _) = scan_vault_capped(root)?;
+    'files: for rel in files {
         let path = base.join(&rel);
         if let Ok(meta) = std::fs::metadata(&path) {
             if meta.len() > SEARCH_MAX_FILE_BYTES {
@@ -575,7 +626,7 @@ fn do_search_vault(root: &str, query: &str) -> SearchResult {
             }
         }
     }
-    SearchResult { hits, truncated }
+    Ok(SearchResult { hits, truncated })
 }
 
 /// Case-insensitive substring scan over every note. Personal-scale by design
@@ -584,7 +635,7 @@ fn do_search_vault(root: &str, query: &str) -> SearchResult {
 async fn search_vault(root: String, query: String) -> Result<SearchResult, String> {
     tauri::async_runtime::spawn_blocking(move || do_search_vault(&root, &query))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?
 }
 
 #[derive(serde::Serialize, Debug, PartialEq)]
@@ -692,13 +743,14 @@ async fn scan_aliases(root: String) -> Result<Vec<NoteAliases>, String> {
 fn do_create_note(path: &str) -> Result<(), String> {
     let target = PathBuf::from(path);
     if let Some(dir) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir).map_err(|e| format!("create {path}: dirs: {e}"))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("Couldn't make its folder — {}.", plain_os_error(&e)))?;
     }
     match std::fs::OpenOptions::new().write(true).create_new(true).open(&target) {
         Ok(_) => Ok(()),
         // already-exists is fine: caller opens the existing note, never clobbers
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(format!("create {path}: {e}")),
+        Err(e) => Err(format!("{}.", plain_os_error(&e))),
     }
 }
 
@@ -752,10 +804,16 @@ struct RenameResult {
 /// its destination with it, which is also what keeps a destination inside the
 /// vault — ".." and a drive letter are both refused here.
 fn valid_new_name(name: &str) -> bool {
-    const RESERVED: [&str; 22] = [
-        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
-        "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    const RESERVED: [&str; 24] = [
+        "con", "prn", "aux", "nul", "conin$", "conout$", "com1", "com2", "com3", "com4", "com5",
+        "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7",
+        "lpt8", "lpt9",
     ];
+    /* Windows resolves a device name from the segment up to its FIRST dot,
+     * with trailing spaces stripped — `CON.md`, `NUL.txt`, `COM1.notes` are
+     * all the device. Test the stem the OS tests, not the whole segment; the
+     * whole-segment compare accepted every one of those (s51 #25). */
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
     !name.is_empty()
         && name.len() <= 200
         && !name.ends_with('.')
@@ -763,7 +821,7 @@ fn valid_new_name(name: &str) -> bool {
         && !name.chars().any(|c| {
             matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '/' | '\\') || (c as u32) < 0x20
         })
-        && !RESERVED.iter().any(|r| name.eq_ignore_ascii_case(r))
+        && !RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
 }
 
 /// Do two paths name the same file on disk? Canonicalizing asks the filesystem
@@ -1327,12 +1385,12 @@ fn do_rename_note(root: &str, old_rel: &str, new_name: &str) -> Result<RenameRes
     // `old_rel` walks the rename out of the vault — and `git_anchor_for` then
     // runs `git init` wherever it landed. Same guard, applied to both ends.
     if !old_rel.split('/').all(valid_new_name) {
-        return Err(format!("rename: {old_rel} is not a note inside this vault"));
+        return Err("It isn't a note inside this vault.".to_string());
     }
     let base = PathBuf::from(root);
     let old_path = base.join(old_rel);
     if !old_path.is_file() {
-        return Err(format!("rename: {old_rel} no longer exists"));
+        return Err("The note is already gone from the folder.".to_string());
     }
     let ext = old_path
         .extension()
@@ -1364,10 +1422,27 @@ fn do_rename_note(root: &str, old_rel: &str, new_name: &str) -> Result<RenameRes
     if new_path.exists() && !is_same_file(&old_path, &new_path) {
         return Err(format!("\u{201c}{new_name}\u{201d} already exists"));
     }
+    /* Remember the deepest ancestor that already existed: if the move itself
+     * then fails, everything created below it is removed again — "skip, never
+     * half-write" includes not leaving an empty folder chain behind (s51 #33).
+     * remove_dir refuses a non-empty directory, so the walk-back can never
+     * take anything that was already there or that something else just put in. */
+    let preexisting_dir = new_path
+        .parent()
+        .and_then(|p| p.ancestors().find(|a| a.exists()).map(Path::to_path_buf));
     if let Some(parent) = new_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("rename: {}", plain_os_error(&e)))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}.", plain_os_error(&e)))?;
     }
-    std::fs::rename(&old_path, &new_path).map_err(|e| format!("rename: {e}"))?;
+    if let Err(e) = std::fs::rename(&old_path, &new_path) {
+        if let (Some(parent), Some(stop)) = (new_path.parent(), preexisting_dir.as_deref()) {
+            let mut dir = parent;
+            while dir != stop && std::fs::remove_dir(dir).is_ok() {
+                let Some(up) = dir.parent() else { break };
+                dir = up;
+            }
+        }
+        return Err(format!("{}.", plain_os_error(&e)));
+    }
     // keep the disk-authority guard tracking the file under its new path
     if let Ok(mut map) = known_bytes().lock() {
         if let Some(fp) = map.remove(&old_path) {
@@ -1459,6 +1534,11 @@ struct DeleteResult {
     /// Deleting a note used to orphan its images forever and silently; taking
     /// them is only safe if it is also said out loud.
     trashed: Vec<String>,
+    /// Why the attachment sweep's answer is incomplete, when it is: the sweep
+    /// stood down (an unreadable note, a capped scan), or some attachments
+    /// refused to move. An empty `trashed` is otherwise indistinguishable
+    /// from "no attachments", and absence must speak (s51 #22).
+    sweep_skipped: Option<String>,
     /// Why the deletion isn't in git history, when it isn't. The note is in the
     /// trash either way, so this is never an error.
     git_error: Option<String>,
@@ -1468,11 +1548,12 @@ struct DeleteResult {
 /// Deliberately broad on the "mentions" side: a file name appearing anywhere in
 /// another note — prose, a code fence, a link — keeps the file. So does a note
 /// that can't be read, since nothing can be proven about it; the sweep then
-/// stands down entirely and takes nothing.
-fn orphaned_attachments(root: &Path, note_rel: &str, content: &str) -> Vec<String> {
+/// stands down entirely and takes nothing — and `Err` carries why, because a
+/// silent stand-down reads exactly like "no attachments" (s51 #22).
+fn orphaned_attachments(root: &Path, note_rel: &str, content: &str) -> Result<Vec<String>, String> {
     let candidates = note_attachments(content, note_rel);
     if candidates.is_empty() {
-        return candidates;
+        return Ok(candidates);
     }
     let needles: Vec<(String, String)> = candidates
         .iter()
@@ -1482,18 +1563,22 @@ fn orphaned_attachments(root: &Path, note_rel: &str, content: &str) -> Vec<Strin
         })
         .collect();
     let mut used = vec![false; candidates.len()];
-    // the note itself is already in the trash, so the walk never sees it
-    let (others, capped) = scan_vault_capped(&root.to_string_lossy());
+    // the note itself is already in the trash, so the walk never sees it —
+    // and an unreadable root is the same epistemic state as a capped walk:
+    // nothing can be proven about what the vault does NOT contain, stand down
+    let Ok((others, capped)) = scan_vault_capped(&root.to_string_lossy()) else {
+        return Ok(Vec::new());
+    };
     if capped {
         // A scan that stopped at a cap is not a list of every note: one past the
         // depth limit may be using this image, and it would be trashed out from
         // under a note still showing it. Same doubt as an unreadable note below,
         // same answer — stand down and take nothing.
-        return Vec::new();
+        return Err("the vault is too large to rule out other notes using them".into());
     }
     for rel in others {
         let Ok(other) = std::fs::read_to_string(root.join(&rel)) else {
-            return Vec::new();
+            return Err(format!("“{rel}” couldn't be read to rule its usage out"));
         };
         let other = other.to_lowercase();
         for (i, (encoded, name)) in needles.iter().enumerate() {
@@ -1502,13 +1587,13 @@ fn orphaned_attachments(root: &Path, note_rel: &str, content: &str) -> Vec<Strin
             }
         }
     }
-    candidates.into_iter().zip(used).filter(|(_, used)| !used).map(|(c, _)| c).collect()
+    Ok(candidates.into_iter().zip(used).filter(|(_, used)| !used).map(|(c, _)| c).collect())
 }
 
 fn do_delete_note(path: &str) -> Result<DeleteResult, String> {
     let p = Path::new(path);
     if !p.is_file() {
-        return Err(format!("delete: {path} no longer exists"));
+        return Err("The note is already gone from the folder.".to_string());
     }
     // Read it before it goes: the note is the only record of which images
     // belonged to it. An unreadable note simply keeps its attachments.
@@ -1518,22 +1603,48 @@ fn do_delete_note(path: &str) -> Result<DeleteResult, String> {
     });
     let content = note_rel.as_ref().and_then(|_| std::fs::read_to_string(p).ok());
 
-    trash::delete(p).map_err(|e| format!("delete {path}: {e}"))?;
+    trash::delete(p).map_err(|e| format!("Windows couldn't move it to the Recycle Bin. {e}"))?;
     if let Ok(mut map) = known_bytes().lock() {
         map.remove(p);
     }
 
     let mut trashed = Vec::new();
-    if let (Some(root), Some(rel), Some(content)) =
-        (vault.as_ref(), note_rel.as_ref(), content.as_ref())
-    {
-        for att in orphaned_attachments(root, rel, content) {
-            let file = root.join(&att);
-            // to the trash, never removed: an attachment is the user's file too
-            if file.is_file() && trash::delete(&file).is_ok() {
-                trashed.push(att);
+    let mut sweep_skipped = None;
+    match (vault.as_ref(), note_rel.as_ref(), content.as_ref()) {
+        (Some(root), Some(rel), Some(content)) => {
+            match orphaned_attachments(root, rel, content) {
+                Ok(orphans) => {
+                    let mut refused: Vec<String> = Vec::new();
+                    for att in orphans {
+                        let file = root.join(&att);
+                        if !file.is_file() {
+                            continue;
+                        }
+                        // to the trash, never removed: an attachment is the
+                        // user's file too — and one that refuses to go is an
+                        // orphan the user must hear about (s51 #22)
+                        match trash::delete(&file) {
+                            Ok(()) => trashed.push(att),
+                            Err(_) => refused.push(att),
+                        }
+                    }
+                    if !refused.is_empty() {
+                        sweep_skipped = Some(format!(
+                            "couldn't move to the trash and stayed behind: {}",
+                            refused.join(", ")
+                        ));
+                    }
+                }
+                Err(why) => sweep_skipped = Some(why),
             }
         }
+        // the note refused to be read before it left: the only record of its
+        // attachments is gone, so they all stay — say so (s51 #22)
+        (Some(_), Some(_), None) => {
+            sweep_skipped =
+                Some("the note couldn't be read before it left, so they all stay".into());
+        }
+        _ => {}
     }
 
     let name = note_name(p);
@@ -1544,7 +1655,7 @@ fn do_delete_note(path: &str) -> Result<DeleteResult, String> {
     let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
     let git_error = git_anchor_for(p)
         .and_then(|a| git_commit_paths(&a, &path_refs, &format!("sandy: delete {name}")).err());
-    Ok(DeleteResult { trashed, git_error })
+    Ok(DeleteResult { trashed, sweep_skipped, git_error })
 }
 
 /// Move a note to the system trash (recoverable — never a permanent delete),
@@ -1556,24 +1667,33 @@ async fn delete_note(path: String) -> Result<DeleteResult, String> {
         .map_err(|e| e.to_string())?
 }
 
-fn markdown_arg(args: &[String]) -> Option<String> {
-    args.iter()
-        .skip(1)
-        .find(|a| {
-            let p = Path::new(a);
-            p.is_file()
-                && matches!(
-                    p.extension().and_then(|e| e.to_str()),
-                    Some(e) if ["md", "markdown", "txt"].iter().any(|x| e.eq_ignore_ascii_case(x))
-                )
-        })
-        .cloned()
+/* Resolved against `cwd`, and the RESOLVED path is what's returned (s51 #24):
+ * a terminal's `sandy todo.md` used to open the note relative to wherever the
+ * process sat — fine at launch, but the single-instance handoff evaluated the
+ * SECOND terminal's argv against the FIRST instance's cwd, so the file either
+ * never opened (the request vanished into a window-focus) or a same-named
+ * file elsewhere opened instead. A relative path also has `parent() == ""`,
+ * which the writer refuses — so every save of such a note failed. */
+fn markdown_arg(args: &[String], cwd: &Path) -> Option<String> {
+    args.iter().skip(1).find_map(|a| {
+        let p = Path::new(a);
+        let abs = if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) };
+        let is_note = abs.is_file()
+            && matches!(
+                abs.extension().and_then(|e| e.to_str()),
+                Some(e) if ["md", "markdown", "txt"].iter().any(|x| e.eq_ignore_ascii_case(x))
+            );
+        is_note.then(|| abs.to_string_lossy().into_owned())
+    })
 }
 
 /// File passed on the command line at launch (double-clicked .md), if any.
 #[tauri::command]
 fn initial_file() -> Option<String> {
-    markdown_arg(&std::env::args().collect::<Vec<_>>())
+    // an unreadable cwd degrades to the old behavior: relative args stay
+    // relative and simply don't match
+    let cwd = std::env::current_dir().unwrap_or_default();
+    markdown_arg(&std::env::args().collect::<Vec<_>>(), &cwd)
 }
 
 /// Reveal the main window only after the requested document is ready to paint.
@@ -1658,16 +1778,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("gone.md");
         let err = do_read_doc(missing.to_str().unwrap()).unwrap_err();
-        assert!(err.contains("gone.md"), "{err}");
-        assert!(err.contains("isn't there any more"), "{err}");
+        // deliberately nameless: the App prefix already says which note (s57)
+        assert!(err.contains("moved or deleted"), "{err}");
         assert!(!err.contains("os error"), "no machine talk in a shown message: {err}");
 
-        // UTF-16: named, never decoded — decoding would re-encode the whole
-        // file on the first save
+        // UTF-16: named by encoding, never decoded — decoding would re-encode
+        // the whole file on the first save
         let wide = dir.path().join("wide.md");
         std::fs::write(&wide, [0xFF, 0xFE, b'h', 0x00, b'i', 0x00]).unwrap();
         let err = do_read_doc(wide.to_str().unwrap()).unwrap_err();
-        assert!(err.contains("wide.md") && err.contains("UTF-16LE"), "{err}");
+        assert!(err.contains("UTF-16LE"), "{err}");
         assert_eq!(
             std::fs::read(&wide).unwrap(),
             [0xFF, 0xFE, b'h', 0x00, b'i', 0x00],
@@ -1763,7 +1883,7 @@ mod tests {
 
         assert_eq!(
             orphaned_attachments(root, "note.md", content),
-            vec!["attachments/pic.png".to_string()],
+            Ok(vec!["attachments/pic.png".to_string()]),
             "a complete scan still says the image is orphaned"
         );
 
@@ -1774,8 +1894,8 @@ mod tests {
         }
         std::fs::create_dir_all(&deep).unwrap();
         assert!(
-            orphaned_attachments(root, "note.md", content).is_empty(),
-            "a truncated walk must stand down and take nothing"
+            orphaned_attachments(root, "note.md", content).is_err(),
+            "a truncated walk must stand down, take nothing, and say why (s51 #22)"
         );
     }
 
@@ -2011,13 +2131,13 @@ mod tests {
         std::fs::write(base.join("one.md"), "Alpha\r\nsecond LINE here\r\n").unwrap();
         std::fs::write(base.join("two.md"), "nothing\n").unwrap();
 
-        let found = do_search_vault(base.to_str().unwrap(), "line HERE");
+        let found = do_search_vault(base.to_str().unwrap(), "line HERE").unwrap();
         assert_eq!(
             found.hits,
             vec![SearchHit { rel: "one.md".into(), line: 2, text: "second LINE here".into() }]
         );
         assert!(!found.truncated, "a short result set is the whole result set");
-        assert!(do_search_vault(base.to_str().unwrap(), "  ").hits.is_empty());
+        assert!(do_search_vault(base.to_str().unwrap(), "  ").unwrap().hits.is_empty());
     }
 
     #[test]
@@ -2029,7 +2149,7 @@ mod tests {
         std::fs::write(base.join("a.md"), &many).unwrap();
         std::fs::write(base.join("z.md"), "needle\n").unwrap();
 
-        let found = do_search_vault(base.to_str().unwrap(), "needle");
+        let found = do_search_vault(base.to_str().unwrap(), "needle").unwrap();
         assert_eq!(found.hits.len(), SEARCH_MAX_HITS);
         assert!(found.truncated, "the walk stopped alphabetically — say so");
         // z.md never got looked at: exactly the silence this flag ends
@@ -2102,11 +2222,27 @@ mod tests {
     }
 
     #[test]
+    fn markdown_arg_resolves_against_the_callers_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("todo.md"), "x").unwrap();
+        let args: Vec<String> = vec!["sandy.exe".into(), "todo.md".into()];
+        let got = markdown_arg(&args, dir.path()).expect("a relative arg must resolve");
+        assert_eq!(PathBuf::from(&got), dir.path().join("todo.md"));
+        // resolved against the WRONG cwd it must not match — this vanishing
+        // silently was s51 #24's single-instance bug
+        assert!(markdown_arg(&args, &dir.path().join("elsewhere")).is_none());
+    }
+
+    #[test]
     fn new_name_validation_rejects_the_unusable() {
-        for bad in ["", "a/b", "a\\b", "a?b", "a:b", "con", "LPT3", "dot.", "sp "] {
+        for bad in [
+            "", "a/b", "a\\b", "a?b", "a:b", "con", "LPT3", "dot.", "sp ",
+            // s51 #25: the device name is the stem before the first dot
+            "CON.md", "NUL.txt", "COM1.notes", "conin$", "CONOUT$.md", "con .md",
+        ] {
             assert!(!valid_new_name(bad), "{bad:?} must be rejected");
         }
-        for good in ["Note", "My Note 2", "проект-α", "notes.2026", "a.b.c"] {
+        for good in ["Note", "My Note 2", "проект-α", "notes.2026", "a.b.c", "Console notes"] {
             assert!(valid_new_name(good), "{good:?} must be accepted");
         }
     }
@@ -2462,9 +2598,12 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             use tauri::{Emitter, Manager};
-            if let Some(file) = markdown_arg(&argv) {
+            // the second instance's OWN cwd — the plugin supplies it for
+            // exactly this; evaluating argv against our cwd opened the wrong
+            // file or none (s51 #24)
+            if let Some(file) = markdown_arg(&argv, Path::new(&cwd)) {
                 let _ = app.emit("sandy://open-file", file);
             } else if let Some(win) = app.get_webview_window("main") {
                 let _ = win.unminimize();
@@ -2481,6 +2620,30 @@ pub fn run() {
                         .level(log::LevelFilter::Info)
                         .build(),
                 )?;
+            }
+            // An undecorated window opts out of Win11's rounded corners; this
+            // asks DWM for them back. Best-effort — on Win10 or a refusal the
+            // window is exactly what it was (imba-roadmap §W1.10).
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::Manager;
+                use windows::Win32::Graphics::Dwm::{
+                    DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
+                    DWMWCP_ROUND, DWM_WINDOW_CORNER_PREFERENCE,
+                };
+                if let Some(win) = app.get_webview_window("main") {
+                    if let Ok(hwnd) = win.hwnd() {
+                        let pref: DWM_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND;
+                        unsafe {
+                            let _ = DwmSetWindowAttribute(
+                                windows::Win32::Foundation::HWND(hwnd.0),
+                                DWMWA_WINDOW_CORNER_PREFERENCE,
+                                &pref as *const _ as *const std::ffi::c_void,
+                                std::mem::size_of::<DWM_WINDOW_CORNER_PREFERENCE>() as u32,
+                            );
+                        }
+                    }
+                }
             }
             Ok(())
         })

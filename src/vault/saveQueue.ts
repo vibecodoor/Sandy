@@ -70,7 +70,10 @@ export class SaveQueue {
     if (last && last.path === req.path) this.queue[this.queue.length - 1] = req;
     else this.queue.push(req);
     this.emit();
-    void this.pump();
+    // A conflict is not retryable: the queue idles until the user chooses
+    // (overwrite/discard both route through pump again). Pumping here would
+    // fire a native save guaranteed to be refused on every autosave tick.
+    if (!this.failure?.conflict) void this.pump();
   }
 
   /**
@@ -79,13 +82,33 @@ export class SaveQueue {
    */
   discard(path: string): void {
     this.queue = this.queue.filter((r) => r.path !== path);
-    if (this.failure?.path === path) this.failure = null;
+    const ownedFailure = this.failure?.path === path;
+    if (ownedFailure) this.failure = null;
     if (this.forcePath === path) this.forcePath = null;
-    if (this.retryTimer) {
+    /* The retry timer belongs to the failing request: clearing it for another
+     * path's discard would stall that retry with no symptom. Unreachable while
+     * openPath refuses to switch notes with a save unflushed (the queue holds
+     * one document), pre-empted for the day a second writer appears (s51 #36). */
+    if (ownedFailure && this.retryTimer) {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
     }
     this.emit();
+    // work for other paths may have been waiting behind the discarded failure
+    if (this.queue.length && !this.retryTimer && !this.failure?.conflict) {
+      void this.pump();
+    }
+  }
+
+  /**
+   * Route a write's git failure through the same once-per-session gate the
+   * queue uses for its own saves — for callers whose write bypasses the queue
+   * (attachments). Whatever stops git stops it for every later commit too.
+   */
+  reportGitError(message: string): void {
+    if (this.gitReported) return;
+    this.gitReported = true;
+    this.onGitError?.(message);
   }
 
   /**
@@ -103,6 +126,13 @@ export class SaveQueue {
   flush(): Promise<boolean> {
     if (this.queue.length === 0 && !this.inflight) {
       return Promise.resolve(this.failure === null);
+    }
+    /* A conflict pumps only when overwrite() armed the force — any other
+     * write is a guaranteed second refusal (the autosave path lands here
+     * through saveNow every 800 ms while the banner is up; s51 #19). The
+     * answer is the banner's: not saved, the user chooses. */
+    if (this.failure?.conflict && this.forcePath == null) {
+      return Promise.resolve(false);
     }
     if (this.retryTimer) {
       clearTimeout(this.retryTimer);
@@ -136,10 +166,7 @@ export class SaveQueue {
           // Success: drop the request unless newer text already replaced it.
           if (this.queue[0] === req) this.queue.shift();
           if (this.failure?.path === req.path) this.failure = null;
-          if (result.gitError && !this.gitReported) {
-            this.gitReported = true;
-            this.onGitError?.(result.gitError);
-          }
+          if (result.gitError) this.reportGitError(result.gitError);
           this.emit();
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

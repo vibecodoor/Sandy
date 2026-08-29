@@ -18,6 +18,26 @@
   flex: 1;
   min-width: 0;
   height: 100%;
+  position: relative;
+}
+
+/* Drop affordance (s56 #K10): App toggles `is-file-drag` on <body> from the
+ * native drag events, only for files Sandy would take. Always mounted at
+ * opacity 0 so arriving costs a fade, not a layout; inset starts below the
+ * fixed titlebar; pointer-events off — the OS owns the drag. */
+.document-shell::after {
+  content: "";
+  position: absolute;
+  inset: 40px 0 0 0;
+  border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-quick) var(--ease-out);
+}
+
+body.is-file-drag .document-shell::after {
+  opacity: 1;
 }
 
 /* ─── titlebar (undecorated window) ──────────────────────── */
@@ -86,7 +106,10 @@
 }
 
 .tb-btn svg {
-  stroke-width: 1.2;
+  /* 1, not 1.2: these icons sit beside Windows' own caption glyphs, which are
+   * pixel-crisp — a fractional stroke reads as fuzz at DPR 1. Axis-aligned
+   * strokes in Titlebar.tsx sit on .5 coordinates for the same reason. */
+  stroke-width: 1;
 }
 
 .tb-btn:hover {
@@ -101,6 +124,13 @@
 
 .tb-btn[aria-pressed="true"] {
   color: var(--accent-ink);
+}
+
+/* The pin's whole point is "can I tell it's on?" — unlike the sidebar toggle
+ * (whose open sidebar IS the state), an always-on-top window shows nothing of
+ * its own, so the pressed pin carries a wash on top of the accent ink. */
+.tb-pin[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 /* sun ↔ moon are two different icons, so the incoming one turns into place
@@ -309,6 +339,13 @@
 }
 
 .vault-row:hover .vault-row-forget {
+  opacity: 1;
+}
+
+/* Keyboard focus must reveal it too: opacity: 0 hides the focused button AND
+ * its focus ring, leaving an invisible tab stop where Enter forgets a vault. */
+.vault-row-forget:focus-visible,
+.vault-row:focus-within .vault-row-forget {
   opacity: 1;
 }
 
@@ -603,6 +640,10 @@
 
 .overlay-row.is-selected {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
+  /* The wash alone measured 1.14:1 (light) against an unselected row — under
+   * any perception threshold. The rail is the same second cue the sidebar's
+   * active row carries; the row Enter opens must read unmistakably. */
+  box-shadow: inset 2px 0 var(--accent);
 }
 
 .overlay-row-name {
@@ -691,8 +732,17 @@
   transition: background-color var(--dur-quick) var(--ease-out);
 }
 
-.ctx-item:hover:not(:disabled) {
+.ctx-item:hover:not(:disabled),
+.ctx-item:focus-visible {
   background: color-mix(in srgb, var(--accent) 11%, transparent);
+  outline: none;
+}
+
+/* The roving keyboard cursor needs more than the 1.13:1 wash it replaced the
+ * global ring with — same rail as the sidebar and the overlays. Hover stays
+ * wash-only: the pointer already knows where it is. */
+.ctx-item:focus-visible {
+  box-shadow: inset 2px 0 var(--accent);
 }
 
 .ctx-item:disabled {
@@ -932,7 +982,10 @@
   position: fixed;
   top: 48px;
   right: 14px;
-  z-index: 60;
+  /* Above the find bar's .cm-panels (z 90) — both live in this corner, and a
+   * conflict banner covered by Ctrl+F would hide its own buttons: the one UI
+   * state that silenced "nothing fails in silence". Below the titlebar (100). */
+  z-index: 95;
   display: flex;
   align-items: center;
   gap: 10px;

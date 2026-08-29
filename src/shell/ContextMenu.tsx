@@ -18,10 +18,54 @@ interface ContextMenuProps {
 
 /* Project-styled replacement for the WebView2 context menu. Rendered at the
  * pointer, clamped to the viewport; any outside press, Escape, resize, or
- * window blur dismisses it. */
+ * window blur dismisses it. Keyboard-operable (s51 #30): `contextmenu` also
+ * fires for Shift+F10 and the Menu key, so the first enabled item takes focus
+ * on mount (restored on close — the CM6 selection lives in editor state and
+ * survives the trip), arrows rove with wrap, Home/End jump, Tab closes. */
 export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const restoreRef = useRef<HTMLElement | null>(null);
   const [pos, setPos] = useState({ x, y });
+
+  useLayoutEffect(() => {
+    restoreRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    panelRef.current
+      ?.querySelector<HTMLButtonElement>(".ctx-item:not([disabled])")
+      ?.focus();
+    return () => {
+      const back = restoreRef.current;
+      // an action that placed focus itself (the rename row) mounts after this
+      // cleanup and wins; a plain dismiss lands back where the menu found it
+      if (back?.isConnected) back.focus();
+    };
+  }, []);
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const enabled = [
+      ...(panelRef.current?.querySelectorAll<HTMLButtonElement>(".ctx-item:not([disabled])") ??
+        []),
+    ];
+    if (!enabled.length) return;
+    const at = enabled.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      enabled[(at + 1) % enabled.length].focus();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      enabled[(at - 1 + enabled.length) % enabled.length].focus();
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      enabled[0].focus();
+    } else if (e.key === "End") {
+      e.preventDefault();
+      enabled[enabled.length - 1].focus();
+    } else if (e.key === "Tab") {
+      // the menu pattern: Tab dismisses rather than walking out behind it
+      e.preventDefault();
+      onClose();
+    }
+  };
 
   useLayoutEffect(() => {
     const el = panelRef.current;
@@ -58,7 +102,8 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
       className="ctx-menu"
       style={{ left: pos.x, top: pos.y }}
       role="menu"
-      // keep focus (and the editor selection) where it was
+      onKeyDown={onKeyDown}
+      // a press inside the menu must not drag focus off the roving item
       onMouseDown={(e) => e.preventDefault()}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -71,6 +116,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
             type="button"
             role="menuitem"
             className="ctx-item"
+            tabIndex={-1}
             disabled={item.disabled}
             onClick={() => {
               onClose();

@@ -175,7 +175,13 @@ export function QuickOpen({
 
   return (
     <div className="overlay-backdrop" onMouseDown={onClose}>
-      <div className="overlay-panel" onMouseDown={(e) => e.stopPropagation()}>
+      <div
+        className="overlay-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Open a note"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
         <input
           ref={inputRef}
           className="overlay-input"
@@ -184,8 +190,12 @@ export function QuickOpen({
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
           spellCheck={false}
+          role="combobox"
+          aria-expanded={rows.length > 0}
+          aria-controls="quickopen-list"
+          aria-activedescendant={rows[selected] ? `quickopen-row-${selected}` : undefined}
         />
-        <div className="overlay-list" ref={listRef}>
+        <div className="overlay-list" role="listbox" id="quickopen-list" ref={listRef}>
           {rows.map((row, i) => (
             <button
               key={
@@ -197,6 +207,12 @@ export function QuickOpen({
               }
               type="button"
               className={`overlay-row${i === selected ? " is-selected" : ""}`}
+              // the ArrowDown/Up model owns selection; a tab stop per row would
+              // put the whole result list between the input and the world
+              tabIndex={-1}
+              role="option"
+              id={`quickopen-row-${i}`}
+              aria-selected={i === selected}
               onMouseEnter={() => setSelected(i)}
               onClick={() => activate(row)}
             >
@@ -224,6 +240,17 @@ export function QuickOpen({
               )}
             </button>
           ))}
+          {rows.length === 0 ? (
+            /* the empty list used to be a bare input over silence, while the
+             * sidebar and the search panel both speak in the same situation */
+            <div className="overlay-hint">
+              {headingMode
+                ? headings.length
+                  ? "No matching headings."
+                  : "No headings in this note."
+                : "No notes here yet."}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

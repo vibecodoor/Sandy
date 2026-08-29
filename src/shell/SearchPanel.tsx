@@ -96,7 +96,13 @@ export function SearchPanel({ root, onPick, onClose }: SearchPanelProps) {
 
   return (
     <div className="overlay-backdrop" onMouseDown={onClose}>
-      <div className="overlay-panel" onMouseDown={(e) => e.stopPropagation()}>
+      <div
+        className="overlay-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search in notes"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
         <input
           ref={inputRef}
           className="overlay-input"
@@ -105,13 +111,23 @@ export function SearchPanel({ root, onPick, onClose }: SearchPanelProps) {
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
           spellCheck={false}
+          role="combobox"
+          aria-expanded={hits.length > 0}
+          aria-controls="vaultsearch-list"
+          aria-activedescendant={hits[selected] ? `vaultsearch-row-${selected}` : undefined}
         />
-        <div className="overlay-list" ref={listRef}>
+        <div className="overlay-list" role="listbox" id="vaultsearch-list" ref={listRef}>
           {hits.map((hit, i) => (
             <button
               key={`${hit.rel}:${hit.line}:${i}`}
               type="button"
               className={`overlay-row${i === selected ? " is-selected" : ""}`}
+              // the ArrowDown/Up model owns selection; a tab stop per row would
+              // put the whole result list between the input and the world
+              tabIndex={-1}
+              role="option"
+              id={`vaultsearch-row-${i}`}
+              aria-selected={i === selected}
               onMouseEnter={() => setSelected(i)}
               onClick={() => onPick(hit.rel, hit.line)}
             >

@@ -38,6 +38,12 @@ const memory = new Map<string, NoteMemory>();
 const MEMORY_MAX = 10;
 /** Past this, ten remembered notes is real memory; the undo stack is not worth it. */
 const MEMORY_MAX_DOC = 2_000_000;
+/** Total budget across entries. An entry retains ≈2× its doc — the JSON
+ * state's copy and `doc` are independent strings — and V8 widens a whole
+ * string to 2 B/char the moment one non-Latin-1 character appears, so ten
+ * notes at the per-note cap could hold ≈80 MB. `doc.length * 2` tracks the
+ * real retention to ~2 % (s51 #40). */
+const MEMORY_MAX_BYTES = 8_000_000;
 
 function remember(key: string, view: EditorView): void {
   const doc = view.state.doc.toString();
@@ -48,9 +54,21 @@ function remember(key: string, view: EditorView): void {
     doc,
     scroll: view.scrollSnapshot(),
   });
-  for (const stale of [...memory.keys()].slice(0, Math.max(0, memory.size - MEMORY_MAX))) {
+  let bytes = 0;
+  for (const kept of memory.values()) bytes += kept.doc.length * 2;
+  // oldest first; the just-inserted entry is last and alone fits the budget
+  for (const stale of memory.keys()) {
+    if (memory.size <= MEMORY_MAX && bytes <= MEMORY_MAX_BYTES) break;
+    bytes -= memory.get(stale)!.doc.length * 2;
     memory.delete(stale);
   }
+}
+
+/** Drop every remembered note. A vault switch strands entries — their keys
+ * are absolute paths in the old vault, unreachable and still resident; the
+ * byte budget bounds the strand but only this removes it (s51 #40). */
+export function forgetNoteMemory(): void {
+  memory.clear();
 }
 
 /**

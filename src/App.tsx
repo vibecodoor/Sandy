@@ -3,13 +3,14 @@ import { createPortal, flushSync } from "react-dom";
 import { openSearchPanel } from "@codemirror/search";
 import { EditorView } from "@codemirror/view";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { Editor } from "./editor/Editor";
+import { Editor, forgetNoteMemory } from "./editor/Editor";
 import {
   externalHref,
   insertImageMarkdown,
   linkAt,
   vaultIndexChanged,
 } from "./editor/extensions";
+import { imeBusy } from "./editor/imeGuard";
 import { sourceRevealActive, toggleSourceReveal } from "./editor/revealSource";
 import { applyWritingModes, type WritingModes } from "./editor/writingModes";
 import { visibleStats, visibleWordCount } from "./editor/visibleText";
@@ -202,6 +203,13 @@ export default function App() {
     () => localStorage.getItem(SIDEBAR_KEY) === "1",
   );
   const [overlay, setOverlay] = useState<Overlay>(null);
+  /* The onClose handlers hand focus back themselves, but they run before the
+   * commit that lifts `inert` off the shell — and focusing into an inert tree
+   * fails silently. This runs after that commit, so the keyboard actually
+   * lands back in the text (s51 #29). */
+  useEffect(() => {
+    if (overlay === null) viewRef.current?.focus();
+  }, [overlay]);
   const [theme, setTheme] = useState<Theme>(
     () => (localStorage.getItem(THEME_KEY) as Theme | null) ?? systemTheme(),
   );
@@ -223,6 +231,14 @@ export default function App() {
     navigatingTo: string | null;
   }>({ stack: [], index: -1, navigatingTo: null });
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* s51 #45: armed while a rename/delete of the OPEN note is remapping its
+   * path on disk. Every save routes through saveNow, and a save landing in
+   * that window targets the old path — which the native gates no longer know,
+   * so they fail open and the write resurrects the file that was just renamed
+   * away (or trashed). The promise resolves with where the note ended up;
+   * saveNow must trust that verdict, not fileRef, because fileRef only
+   * follows on the next render and still reads the old path here. */
+  const pathHold = useRef<Promise<{ movedTo?: string; deleted?: boolean }> | null>(null);
 
   /* Save orchestration: single-flight queue; failures surface instead of vanishing. */
   const saveQueue = useRef<SaveQueue | null>(null);
@@ -281,8 +297,8 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
   /* Flipping the theme is the one moment the whole window changes at once, so
-   * it cross-fades as a single compositor snapshot: shadows, gradient fills
-   * (the table's column dividers are one), the selection layer's blend mode,
+   * it cross-fades as a single compositor snapshot: shadows (the table's
+   * column dividers are one), gradient fills, the selection layer's blend mode,
    * the icons and the native scrollbars all ride along, and not one element
    * repaints. `data-theme` and the React state are flipped together inside the
    * callback — a view transition captures the "after" frame the moment it
@@ -478,6 +494,25 @@ export default function App() {
       clearTimeout(saveTimer.current);
       saveTimer.current = null;
     }
+    /* A rename/delete of the open note is in flight (s51 #45): park until it
+     * settles, then act on its verdict. Deleted — the edits left with the
+     * note, deliberately (deleteNoteAction says so). Moved — save the live
+     * buffer under the note's new name; the rename re-files what it saw, and
+     * this catches anything typed since. Stayed (the operation failed) — the
+     * old path is still the note's real home; fall through and save there. */
+    while (pathHold.current) {
+      const verdict = await pathHold.current;
+      const queue = saveQueue.current!;
+      if (verdict.deleted) return queue.flush();
+      if (verdict.movedTo) {
+        const view = viewRef.current;
+        const f = fileRef.current;
+        if (view && f) {
+          queue.request({ path: verdict.movedTo, text: view.state.doc.toString(), eol: f.eol });
+        }
+        return queue.flush();
+      }
+    }
     recordSession();
     const view = viewRef.current;
     const f = fileRef.current;
@@ -608,9 +643,15 @@ export default function App() {
             !!pendingRestore.current && samePath(pendingRestore.current.path, target);
           if (seeking) {
             pendingRestore.current = null;
-          } else if (!restoring) {
-            const pos = loadNotePosition(target);
-            pendingRestore.current = pos ? { path: target, ...pos } : null;
+          } else {
+            /* A seek aimed at another note is stale the moment an ordinary
+             * open supersedes it (Explorer double-click over an Alt+←, say) —
+             * left armed, it would misfire on that note's next open (s51 #32). */
+            pendingSeek.current = null;
+            if (!restoring) {
+              const pos = loadNotePosition(target);
+              pendingRestore.current = pos ? { path: target, ...pos } : null;
+            }
           }
         }
         setSession({
@@ -636,6 +677,11 @@ export default function App() {
         const view = viewRef.current;
         if (view) {
           setOpening(false);
+          /* A failed in-place reload (the "Use the file on disk" button, the
+           * note deleted outside Sandy) has already discarded the queue: the
+           * dot would read *saved* over a buffer that exists nowhere on disk.
+           * Re-arm the autosave so the flag tells the truth (s51 #28). */
+          scheduleSave();
           view.focus();
           void revealWindow();
         } else {
@@ -643,7 +689,7 @@ export default function App() {
         }
       }
     },
-    [recordNav, refreshVault, revealWindow, saveNow, showNotice],
+    [recordNav, refreshVault, revealWindow, saveNow, scheduleSave, showNotice],
   );
 
   /* Alt+← / Alt+→ walk the visited-note history like a browser. */
@@ -687,6 +733,11 @@ export default function App() {
   }, [showNotice]);
 
   const switchVault = useCallback((root: string) => {
+    /* The per-path note memory is keyed by absolute paths in the vault being
+     * left — unreachable from the new one and still resident (s51 #40). The
+     * auto-follow root change is deliberately NOT cleared: crossing it with
+     * Alt+← is normal, and the byte budget bounds what it can strand. */
+    forgetNoteMemory();
     setVaultRoot(root);
     setVaults(pushKnownVault(root));
   }, []);
@@ -759,7 +810,11 @@ export default function App() {
         return;
       }
       const rel = safeNoteRelPath(inner);
-      if (!rel) return;
+      if (!rel) {
+        // a click that visibly does nothing is worse than a refusal (s57 #V11)
+        showNotice(`“${inner}” can't be a note name.`);
+        return;
+      }
       try {
         await createNote(joinPath(root, rel));
         await openPath(joinPath(root, rel));
@@ -777,8 +832,13 @@ export default function App() {
    * vault root every time. A folder row passes its own path instead.
    * The note arrives empty and focused, so the first keystroke lands in it.
    */
+  /* Two Ctrl+N in flight both probe the disk, both see the same free name, and
+   * create_note rightly refuses the second — the user hears "couldn't" where
+   * "Untitled 2" was the intent. One at a time (s51 #31). */
+  const newNoteBusy = useRef(false);
   const newNote = useCallback(
     async (dirRel?: string) => {
+      if (newNoteBusy.current) return;
       const { root } = vaultRef.current;
       if (!root) {
         // nowhere for it to land yet — same answer as a click on an unresolved
@@ -795,6 +855,7 @@ export default function App() {
           : cur && isUnder(cur.path, root)
             ? (parentDir(cur.path) ?? root)
             : root;
+      newNoteBusy.current = true;
       try {
         /* Ask the disk, not the index: the index is a scan old enough to miss a
          * note made a second ago, and two `Untitled` in a row is exactly the
@@ -812,6 +873,8 @@ export default function App() {
         await openPath(abs);
       } catch (err) {
         showNotice(`Couldn't make a new note. ${errorText(err)}`);
+      } finally {
+        newNoteBusy.current = false;
       }
     },
     [openFolder, openPath, showNotice],
@@ -826,6 +889,11 @@ export default function App() {
       setRenameTarget(null);
       const { root } = vaultRef.current;
       if (!root) return;
+      /* Settled into pathHold's promise (see saveNow): where the open note
+       * ended up. Stays {} — "where it always was" — unless the rename lands. */
+      let holdVerdict: { movedTo?: string } = {};
+      let settleHold: ((verdict: { movedTo?: string }) => void) | null = null;
+      let myHold: Promise<{ movedTo?: string }> | null = null;
       try {
         // the vault-wide rewrite must see the open buffer's bytes on disk
         const flushed = await saveNow();
@@ -833,8 +901,16 @@ export default function App() {
         // the bytes the rewrite is about to walk — anything the buffer holds
         // beyond this was typed while the rename ran
         const flushedText = viewRef.current?.state.doc.toString();
-        const res = await renameNote(root, rel, newName);
         const oldAbs = joinPath(root, rel);
+        /* Renaming the OPEN note: from here until the note is re-filed, any
+         * save targeting the old path resurrects it (s51 #45) — park them. */
+        if (fileRef.current && samePath(fileRef.current.path, oldAbs)) {
+          myHold = new Promise((resolve) => {
+            settleHold = resolve;
+          });
+          pathHold.current = myHold;
+        }
+        const res = await renameNote(root, rel, newName);
         const newAbs = joinPath(root, res.new_rel);
         // navigation history follows the note to its new name
         for (const entry of navRef.current.stack) {
@@ -873,6 +949,7 @@ export default function App() {
           ? view.state.doc.lineAt(view.state.selection.main.head).number
           : 1;
         if (cur && samePath(cur.path, oldAbs)) {
+          holdVerdict = { movedTo: newAbs };
           /* Text typed while the rename was in flight is only in the buffer,
            * and it is filed under a name that no longer exists: the reload
            * remounts the Editor on a new key, and Editor's own memory of this
@@ -906,6 +983,14 @@ export default function App() {
         // already taken, forbidden character) — show what it said
         showNotice(errorText(err));
         setRenameTarget(rel); // reopen the row so the refusal is visible
+      } finally {
+        // TS can't see the assignment inside the Promise executor
+        const settle = settleHold as ((verdict: { movedTo?: string }) => void) | null;
+        if (settle) {
+          // only our own hold: a delete armed mid-walk must keep its gate
+          if (pathHold.current === myHold) pathHold.current = null;
+          settle(holdVerdict);
+        }
       }
     },
     [openPath, refreshVault, saveNow, showNotice],
@@ -916,6 +1001,13 @@ export default function App() {
       const { root } = vaultRef.current;
       if (!root) return;
       const abs = joinPath(root, rel);
+      /* Same shape as the rename's hold (s51 #45): the trash move + commit is
+       * long enough for a keystroke's autosave to re-create the file the user
+       * just deleted. Stays {} if the delete fails — the note is still there
+       * and saving it is right. */
+      let holdVerdict: { deleted?: boolean } = {};
+      let settleHold: ((verdict: { deleted?: boolean }) => void) | null = null;
+      let myHold: Promise<{ deleted?: boolean }> | null = null;
       try {
         const cur = fileRef.current;
         if (cur && samePath(cur.path, abs)) {
@@ -925,8 +1017,13 @@ export default function App() {
             saveTimer.current = null;
           }
           saveQueue.current!.discard(abs);
+          myHold = new Promise((resolve) => {
+            settleHold = resolve;
+          });
+          pathHold.current = myHold;
         }
         const res = await deleteNote(abs);
+        holdVerdict = { deleted: true };
         /* Images the note was using alone leave with it (to the Recycle Bin,
          * like the note). Said out loud because nothing else on screen shows
          * it — a shared image stays behind and is never mentioned. */
@@ -935,6 +1032,10 @@ export default function App() {
         if (took > 0) {
           parts.push(`Its ${took === 1 ? "image went" : `${took} images went`} with it.`);
         }
+        /* The sweep's answer was incomplete — images may remain in the vault
+         * with no note pointing at them, and nothing else on screen would
+         * ever say so (s51 #22). */
+        if (res.sweep_skipped) parts.push(`Some of its images stayed: ${res.sweep_skipped}.`);
         if (res.git_error) parts.push(`It isn't in version history: ${res.git_error}`);
         if (parts.length > 0) showNotice(`Deleted “${basename(abs)}”. ${parts.join(" ")}`);
         const nav = navRef.current;
@@ -953,6 +1054,14 @@ export default function App() {
         void refreshVault(root);
       } catch (err) {
         showNotice(`Couldn't delete “${basename(abs)}”. ${errorText(err)}`);
+      } finally {
+        // TS can't see the assignment inside the Promise executor
+        const settle = settleHold as ((verdict: { deleted?: boolean }) => void) | null;
+        if (settle) {
+          // only our own hold: a rename armed meanwhile must keep its gate
+          if (pathHold.current === myHold) pathHold.current = null;
+          settle(holdVerdict);
+        }
       }
     },
     [refreshVault, showNotice],
@@ -984,7 +1093,17 @@ export default function App() {
       const abs = joinPath(dir, rel);
       try {
         await saveAttachment(abs, data);
-        void gitAutocommit(abs);
+        // an attachment outside version history is invisible until someone
+        // needs it back — same once-per-session gate as the note saves
+        void gitAutocommit(abs).then((gitErr) => {
+          if (gitErr) saveQueue.current!.reportGitError(gitErr);
+        });
+        if (fileRef.current !== f) {
+          // the note changed while the copy ran: the image is on disk under
+          // the note it was pasted into, with no buffer left to link it from
+          showNotice(`The pasted image was saved as “${rel}”, but the note changed before it could be linked.`);
+          return null;
+        }
         return rel;
       } catch (err) {
         // the paste inserts nothing on null — without this the image simply
@@ -1001,14 +1120,22 @@ export default function App() {
       const f = fileRef.current;
       const view = viewRef.current;
       const ext = imageExt(src);
-      if (!isTauri || !f || !view || !ext || view.composing) return;
+      if (!isTauri || !f || !view || !ext || imeBusy(view)) return;
       const dir = parentDir(f.path);
       if (!dir) return;
       const rel = attachmentRelPath(f.name, ext);
       const abs = joinPath(dir, rel);
       try {
         await copyAttachment(src, abs);
-        void gitAutocommit(abs);
+        void gitAutocommit(abs).then((gitErr) => {
+          if (gitErr) saveQueue.current!.reportGitError(gitErr);
+        });
+        if (fileRef.current !== f || viewRef.current !== view) {
+          // the copy outlived the note it was dropped on: the file is on disk
+          // under that note, and inserting into a destroyed view says nothing
+          showNotice(`“${basename(src)}” was copied as “${rel}”, but the note changed before it could be linked.`);
+          return;
+        }
         insertImageMarkdown(view, rel);
         view.focus();
       } catch (err) {
@@ -1059,7 +1186,8 @@ export default function App() {
       if (rel) {
         const { root } = vaultRef.current;
         const items: MenuEntry[] = [
-          { label: "Rename…", action: () => setRenameTarget(rel) },
+          // the shortcut column is how F2/Delete get learned outside sample.md
+          { label: "Rename…", shortcut: "F2", action: () => setRenameTarget(rel) },
         ];
         if (isTauri && root) {
           items.push({
@@ -1073,6 +1201,7 @@ export default function App() {
         }
         items.push("sep", {
           label: "Delete",
+          shortcut: "Delete",
           action: () => void deleteNoteAction(rel),
         });
         setMenu({ x: e.clientX, y: e.clientY, items });
@@ -1135,7 +1264,7 @@ export default function App() {
         void navigator.clipboard
           ?.readText()
           .then((text) => {
-            if (!text || view.composing) return;
+            if (!text || imeBusy(view)) return;
             // synthesize a real paste so the smart-URL handler applies
             const dt = new DataTransfer();
             dt.setData("text/plain", text);
@@ -1276,9 +1405,14 @@ export default function App() {
     [overlay],
   );
 
+  /* The note whose content the export snapshotted — the dialog's default
+   * filename and the running head must name it, not whatever fileRef points
+   * at after the lazy import and image decodes (s51 #34). */
+  const printName = useRef("");
   const exportPdf = useCallback(() => {
     const view = viewRef.current;
     if (!view) return;
+    printName.current = fileRef.current?.name ?? "";
     // lazy: the print renderer (and its markdown-to-HTML walk) stays out of
     // the startup bundle until the first export
     void import("./shell/printExport")
@@ -1290,7 +1424,7 @@ export default function App() {
          * kept out of the startup bundle. The effect's cleanup removes it. */
         document.documentElement.style.setProperty(
           "--pd-title",
-          printTitleValue(fileRef.current?.name ?? ""),
+          printTitleValue(printName.current),
         );
         setPrintHtml(
           renderPrintHtml(view.state.doc.toString(), resolveImageSrc, writingModes.typography),
@@ -1317,7 +1451,7 @@ export default function App() {
         if (isTauri) {
           let outPath: string | null = null;
           try {
-            outPath = await pickPdfSavePath(fileRef.current?.name);
+            outPath = await pickPdfSavePath(printName.current || undefined);
           } catch (err) {
             // the export ends here (no path, no fallback print) — otherwise the
             // menu item would look like it simply does nothing
@@ -1403,7 +1537,12 @@ export default function App() {
     (name: string) => {
       const { root } = vaultRef.current;
       const rel = safeNoteRelPath(name);
-      if (!root || !rel) return;
+      if (!root) return;
+      if (!rel) {
+        // Enter on "Create note" must never be a silent no-op (s57 #V11)
+        showNotice(`“${name}” can't be a note name.`);
+        return;
+      }
       void createNote(joinPath(root, rel))
         .then(() => openPath(joinPath(root, rel)))
         .catch((err) => showNotice(`Couldn't create “${rel}”. ${errorText(err)}`));
@@ -1452,7 +1591,23 @@ export default function App() {
     void import("@tauri-apps/api/webview").then(async ({ getCurrentWebview }) => {
       keep(
         await getCurrentWebview().onDragDropEvent((event) => {
+          /* A body class, not state: "over" streams with the pointer and an
+           * enter/leave pair per drag is all the page needs — shell.css draws
+           * the drop affordance off `is-file-drag`. Lit only when the drag
+           * carries something Sandy would actually take (s56 #K10). */
+          if (event.payload.type === "enter") {
+            const takes = event.payload.paths.some(
+              (p) => /\.(md|markdown|txt)$/i.test(p) || isImportable(p) || imageExt(p),
+            );
+            document.body.classList.toggle("is-file-drag", takes);
+            return;
+          }
+          if (event.payload.type === "leave") {
+            document.body.classList.remove("is-file-drag");
+            return;
+          }
           if (event.payload.type !== "drop") return;
+          document.body.classList.remove("is-file-drag");
           const md = event.payload.paths.find((p) => /\.(md|markdown|txt)$/i.test(p));
           if (md) {
             void openPath(md);
@@ -1492,7 +1647,7 @@ export default function App() {
     const view = viewRef.current;
     const queue = saveQueue.current!;
     if (!isTauri || !f || !view) return;
-    if (view.composing) return;
+    if (imeBusy(view)) return;
     if (queue.status().failure) return; // the banner already owns this file
     if (saveTimer.current || queue.status().dirty) {
       /* Unsaved text is the user's and is never overwritten. Push it to disk
@@ -1508,8 +1663,16 @@ export default function App() {
       // an open (or an edit) started while the read was in flight — its text wins
       if (generation !== openGeneration.current || fileRef.current !== f) return;
       const live = viewRef.current;
-      if (!live || live.composing || saveTimer.current || queue.status().dirty) return;
+      if (!live || imeBusy(live) || saveTimer.current || queue.status().dirty) return;
       if (loaded.text === live.state.doc.toString()) return;
+      /* The one path a foreign editor's bytes enter Sandy — the very case the
+       * mixed-EOL exception exists for, and it must speak here like openPath
+       * does (s51 #18). */
+      if (loaded.mixedEol) {
+        showNotice(
+          `“${basename(f.path)}” mixes Windows and Unix line endings. Saving writes them all in the style it mostly uses.`,
+        );
+      }
       setSession({ file: { ...f, eol: loaded.eol }, doc: loaded.text });
     } catch (err) {
       // Gone, locked or unreadable underneath us. The buffer stays exactly as
@@ -1593,7 +1756,7 @@ export default function App() {
         // same in-note find bar
         e.preventDefault();
         const view = viewRef.current;
-        if (view && !view.composing) openSearchPanel(view);
+        if (view && !imeBusy(view)) openSearchPanel(view);
       } else if (code === "KeyS") {
         e.preventDefault();
         void saveNow();
@@ -1606,7 +1769,8 @@ export default function App() {
         // window of its own. Never mid-composition — a new note swaps the
         // editor out from under an IME session that hasn't committed yet.
         e.preventDefault();
-        if (!e.isComposing && !viewRef.current?.composing) void newNote();
+        const v = viewRef.current;
+        if (!e.isComposing && !(v && imeBusy(v))) void newNote();
       } else if (code === "Backslash") {
         e.preventDefault();
         toggleSidebar();
@@ -1657,7 +1821,12 @@ export default function App() {
   }, [file, saveStatus.failure]);
 
   return (
-    <div className="app-shell">
+    /* While a modal overlay is up the shell is `inert` — the backdrop already
+     * blocks the mouse, this blocks the keyboard: Tab cannot walk out behind
+     * the scrim into controls whose focus ring is invisible under it (s51
+     * #29). The overlays themselves are portaled to <body>, outside the
+     * inert tree; the sidebar proves the pattern. */
+    <div className="app-shell" inert={overlay !== null}>
       <Titlebar
         title={file?.name ?? null}
         sidebarOpen={sidebarOpen}
@@ -1666,7 +1835,14 @@ export default function App() {
         onToggleTheme={toggleTheme}
       />
       {saveStatus.failure ? (
-        <div className="save-banner" role="alert" title={saveStatus.failure.message}>
+        <div
+          className="save-banner"
+          role="alert"
+          /* the hover reason is load-bearing only for a failed save — a
+           * conflict's message is the internal marker, and the visible text
+           * already says everything the marker means (s57 #V9) */
+          title={saveStatus.failure.conflict ? undefined : saveStatus.failure.message}
+        >
           {saveStatus.failure.conflict ? (
             <>
               <span className="save-banner-text">
@@ -1836,33 +2012,39 @@ export default function App() {
             document.body,
           )
         : null}
-      {overlay === "quickopen" && vaultRoot ? (
-        <QuickOpen
-          files={vaultFiles}
-          aliases={aliasIndex}
-          recents={recentRels}
-          headings={quickOpenHeadings}
-          onPick={openRel}
-          onPickHeading={jumpToLine}
-          onCreate={createFromQuickOpen}
-          onClose={() => {
-            // hand the keyboard straight back to the text — no dead click needed
-            setOverlay(null);
-            viewRef.current?.focus();
-          }}
-        />
-      ) : null}
-      {overlay === "search" && vaultRoot ? (
-        <SearchPanel
-          root={vaultRoot}
-          onPick={(rel, line) => openRel(rel, line)}
-          onClose={() => {
-            // hand the keyboard straight back to the text — no dead click needed
-            setOverlay(null);
-            viewRef.current?.focus();
-          }}
-        />
-      ) : null}
+      {overlay === "quickopen" && vaultRoot
+        ? createPortal(
+            <QuickOpen
+              files={vaultFiles}
+              aliases={aliasIndex}
+              recents={recentRels}
+              headings={quickOpenHeadings}
+              onPick={openRel}
+              onPickHeading={jumpToLine}
+              onCreate={createFromQuickOpen}
+              onClose={() => {
+                // hand the keyboard straight back to the text — no dead click needed
+                setOverlay(null);
+                viewRef.current?.focus();
+              }}
+            />,
+            document.body,
+          )
+        : null}
+      {overlay === "search" && vaultRoot
+        ? createPortal(
+            <SearchPanel
+              root={vaultRoot}
+              onPick={(rel, line) => openRel(rel, line)}
+              onClose={() => {
+                // hand the keyboard straight back to the text — no dead click needed
+                setOverlay(null);
+                viewRef.current?.focus();
+              }}
+            />,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

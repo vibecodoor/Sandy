@@ -72,6 +72,10 @@ const rowMarkers = (
       range.setEnd(b.node, b.offset);
     }
   } catch {
+    /* domAtPos can throw mid-update (a position measured against a DOM the
+     * decorations are still rebuilding). No marker this frame is the honest
+     * answer — the next measure pass repaints from settled geometry, and a
+     * thrown frame here would take the whole selection layer down with it. */
     return [];
   }
 
@@ -125,6 +129,10 @@ const stockMarkers = (view: EditorView, from: number, to: number) =>
   );
 
 const selectionMarkers = (view: EditorView): RectangleMarker[] => {
+  // The common case is a lone caret: nothing for this layer to paint, and the
+  // row scan below (querySelectorAll + posAtDOM per row) runs on every
+  // keystroke and scroll step otherwise (s51 #43).
+  if (view.state.selection.ranges.every((r) => r.empty)) return [];
   const out: RectangleMarker[] = [];
   const doc = view.state.doc;
   // A Ctrl+/-revealed row is plain text again and the browser paints it.

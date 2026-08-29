@@ -82,13 +82,16 @@ Give a note a properties block when you want a little structure. The calm card a
 | `Ctrl+K` | Turn the selection into a link |
 | `Ctrl+1` … `Ctrl+6` / `Ctrl+0` | Heading level · back to plain text |
 | `Ctrl+Shift+8` / `7` / `9` | Bullet list · numbered list · quote |
-| `Ctrl+Enter` | Tick a task off |
+| `Ctrl+Enter` | Tick a task on and off |
 | `Tab` / `Shift+Tab` | Indent · outdent a list item |
 | `Ctrl+Shift+V` | Paste as-is, with nothing made smart |
 | `Ctrl+/` | Show the Markdown of the block you're in |
+| `Shift+Right-click` | Spelling suggestions for the word under the cursor |
 
 The sun-and-moon button up top switches between warm paper and warm ember. The quiet dot in the corner holds word count and PDF export. Right-click anywhere for the rest.
 
 ---
 
 That's the whole manual. Paste an image, cross a few things off, follow a link. Notice how the text underneath never changes unless you change it.
+
+One more thing, since it's your writing: nothing but Sandy ever runs against your notes — no plugin API, no extension store, no code from anyone else, and no AI reading along. Just you and the files.

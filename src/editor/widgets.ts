@@ -56,6 +56,40 @@ export class ImageWidget extends WidgetType {
     wrap.appendChild(img);
     return wrap;
   }
+  /* W20 + §N5's second half: when `eq` fails (the alt was retyped, the src
+   * repointed) the widget used to be rebuilt — fresh element, fresh decode,
+   * a visible blink on an image already on screen. The dist's
+   * `updateDOM(dom, view, from)` hands us the previous DOM instead: bring it
+   * up to date field by field — exhaustively, because returning true with a
+   * stale attribute leaves it stale forever — and keep the element. The
+   * remembered natural size only applies when the src is unchanged; a new
+   * src clears the reservation and lets its own load event re-learn it. */
+  override updateDOM(dom: HTMLElement, _view: EditorView, from: ImageWidget): boolean {
+    const img = dom.firstElementChild;
+    if (!(img instanceof HTMLImageElement)) return false;
+    if (this.alt !== from.alt) img.alt = this.alt;
+    if (this.src !== from.src) {
+      img.src = this.src;
+      const known = naturalSize.get(this.src);
+      if (known) {
+        img.width = known.w;
+        img.height = known.h;
+      } else {
+        img.removeAttribute("width");
+        img.removeAttribute("height");
+        img.addEventListener(
+          "load",
+          () => {
+            if (img.naturalWidth && img.naturalHeight) {
+              naturalSize.set(this.src, { w: img.naturalWidth, h: img.naturalHeight });
+            }
+          },
+          { once: true },
+        );
+      }
+    }
+    return true;
+  }
   override ignoreEvent() {
     return false;
   }

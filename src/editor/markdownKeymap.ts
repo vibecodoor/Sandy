@@ -10,6 +10,7 @@ import {
 import type { SyntaxNode } from "@lezer/common";
 import { frontmatterInfo } from "./frontmatter";
 import { imeBusy } from "./imeGuard";
+import { cleanPastedText } from "./pasteClean";
 
 /* Editing ergonomics. Hard constraint: no document transform may be dispatched
  * while an IME composition is active — every command here defers to default
@@ -39,6 +40,15 @@ function inCodeBlock(state: EditorState, pos: number): boolean {
     if (node.name === "FencedCode" || node.name === "CodeBlock") return true;
   }
   return false;
+}
+
+/* The properties card is YAML, not prose: Ctrl+1 there turned a property into
+ * a YAML comment, Ctrl+Shift+8 into a list item, Ctrl+B wrapped a value in
+ * asterisks the card then showed raw — each one silently corrupting the
+ * frontmatter (s57 #B3). Every editing command skips it, like code blocks. */
+function inFrontmatter(state: EditorState, pos: number): boolean {
+  const fm = frontmatterInfo(state);
+  return fm != null && pos <= fm.to;
 }
 
 /** Visit each line touched by any selection range exactly once, in order. */
@@ -72,6 +82,7 @@ function toggleInline(nodeName: string, marker: string): Command {
     const { state } = view;
     view.dispatch(
       state.changeByRange((range) => {
+        if (inFrontmatter(state, range.from)) return { range };
         const node = enclosingFormat(state, range.from, range.to, nodeName);
         if (node) {
           const marks = node.getChildren(inlineMarkName[nodeName]);
@@ -123,6 +134,9 @@ function toggleInline(nodeName: string, marker: string): Command {
               : EditorSelection.range(from + len, to + len),
         };
       }),
+      // any userEvent that isn't input.type keeps undo from merging the toggle
+      // with adjacent typing (CM6 joins annotation-less transactions, s57 #B1)
+      { userEvent: "input.format" },
     );
     return true;
   };
@@ -132,10 +146,17 @@ function toggleInline(nodeName: string, marker: string): Command {
  * plain label text. */
 const toggleLink: Command = (view) => {
   const { state } = view;
+  // two cursors inside one link: the first range unwraps it; a repeat would
+  // insert the label a second time (its deletion maps to empty, its insert
+  // survives — s57 #B17)
+  const unwrapped = new Set<number>();
   view.dispatch(
     state.changeByRange((range) => {
+      if (inFrontmatter(state, range.from)) return { range };
       const node = enclosingFormat(state, range.from, range.to, "Link");
       if (node) {
+        if (unwrapped.has(node.from)) return { range: EditorSelection.cursor(range.from) };
+        unwrapped.add(node.from);
         const marks = node.getChildren("LinkMark");
         if (marks.length < 2) return { range };
         const label = state.sliceDoc(marks[0].to, marks[1].from);
@@ -160,6 +181,7 @@ const toggleLink: Command = (view) => {
         range: EditorSelection.cursor(to + 3),
       };
     }),
+    { userEvent: "input.format" },
   );
   return true;
 };
@@ -171,7 +193,7 @@ function setHeading(level: number): Command {
     const { state } = view;
     const changes: ChangeSpec[] = [];
     forEachSelectedLine(state, (line) => {
-      if (!line.text.trim() || inCodeBlock(state, line.from)) return;
+      if (!line.text.trim() || inCodeBlock(state, line.from) || inFrontmatter(state, line.from)) return;
       const m = /^(#{1,6})\s+/.exec(line.text);
       const current = m ? m[1].length : 0;
       const target = level === current ? 0 : level;
@@ -179,7 +201,7 @@ function setHeading(level: number): Command {
       const prefix = target ? "#".repeat(target) + " " : "";
       changes.push({ from: line.from, to: line.from + (m ? m[0].length : 0), insert: prefix });
     });
-    if (changes.length) view.dispatch({ changes });
+    if (changes.length) view.dispatch({ changes, userEvent: "input.format" });
     return true;
   };
 }
@@ -195,7 +217,9 @@ const orderedPrefixRe = /^(\s*)\d+[.)]\s+/;
 function eligibleLines(state: EditorState): Line[] {
   const lines: Line[] = [];
   forEachSelectedLine(state, (line) => {
-    if (line.text.trim() && !inCodeBlock(state, line.from)) lines.push(line);
+    if (line.text.trim() && !inCodeBlock(state, line.from) && !inFrontmatter(state, line.from)) {
+      lines.push(line);
+    }
   });
   return lines;
 }
@@ -209,13 +233,17 @@ function toggleList(kind: "bullet" | "ordered"): Command {
     if (!lines.length) return false;
     const allHave = lines.every((line) => re.test(line.text));
     const changes: ChangeSpec[] = [];
-    let n = 0;
+    /* One counter per indent width, so a nested item doesn't consume a number
+     * from its parent's sequence (1./  2./3. — s57 #B5). Deeper counters die
+     * when the list outdents past them: coming back down starts a new sublist. */
+    const counters = new Map<number, number>();
     let prev = -2;
     for (const line of lines) {
-      if (line.number !== prev + 1) n = 0; // a gap (blank line) restarts numbering
+      if (line.number !== prev + 1) counters.clear(); // a gap restarts numbering
       prev = line.number;
       const m = re.exec(line.text) ?? other.exec(line.text);
       const indent = m ? m[1].length : /^\s*/.exec(line.text)![0].length;
+      for (const k of [...counters.keys()]) if (k > indent) counters.delete(k);
       if (allHave) {
         // off: the marker goes, and a task box glued to it goes with it
         const box = /^\[[ xX]\]\s+/.exec(line.text.slice(m![0].length));
@@ -224,7 +252,9 @@ function toggleList(kind: "bullet" | "ordered"): Command {
           to: line.from + m![0].length + (box ? box[0].length : 0),
         });
       } else {
-        const marker = kind === "bullet" ? "- " : `${++n}. `;
+        const n = (counters.get(indent) ?? 0) + 1;
+        counters.set(indent, n);
+        const marker = kind === "bullet" ? "- " : `${n}. `;
         changes.push({
           from: line.from + indent,
           to: line.from + (m ? m[0].length : indent),
@@ -232,7 +262,7 @@ function toggleList(kind: "bullet" | "ordered"): Command {
         });
       }
     }
-    view.dispatch({ changes });
+    view.dispatch({ changes, userEvent: "input.format" });
     return true;
   };
 }
@@ -251,7 +281,7 @@ const toggleQuote: Command = (view) => {
     else if (!m)
       changes.push({ from: line.from + /^\s*/.exec(line.text)![0].length, insert: "> " });
   }
-  if (changes.length) view.dispatch({ changes });
+  if (changes.length) view.dispatch({ changes, userEvent: "input.format" });
   return true;
 };
 
@@ -263,13 +293,15 @@ const toggleTask: Command = (view) => {
   const { state } = view;
   const changes: ChangeSpec[] = [];
   forEachSelectedLine(state, (line) => {
+    // a "- [ ]" line inside a fence is a code sample, not a task (s57 #B2)
+    if (inCodeBlock(state, line.from) || inFrontmatter(state, line.from)) return;
     const m = taskRe.exec(line.text);
     if (!m) return;
     const pos = line.from + m[1].length;
     changes.push({ from: pos, to: pos + 1, insert: m[2] === " " ? "x" : " " });
   });
   if (!changes.length) return false;
-  view.dispatch({ changes });
+  view.dispatch({ changes, userEvent: "input.format" });
   return true;
 };
 
@@ -286,6 +318,8 @@ function changeListIndent(dir: 1 | -1): Command {
     let sawList = false;
     forEachSelectedLine(state, (line) => {
       if (!listLineRe.test(line.text)) return;
+      // a list-shaped line inside a fence is a code sample (s57 #B2)
+      if (inCodeBlock(state, line.from) || inFrontmatter(state, line.from)) return;
       sawList = true;
       if (dir === 1) {
         changes.push({ from: line.from, insert: unit });
@@ -297,7 +331,7 @@ function changeListIndent(dir: 1 | -1): Command {
       }
     });
     if (!sawList) return false;
-    if (changes.length) view.dispatch({ changes });
+    if (changes.length) view.dispatch({ changes, userEvent: "input.format" });
     return true;
   };
 }
@@ -332,7 +366,10 @@ let plainPasteUntil = 0;
 const plainPastes = new WeakSet<ClipboardEvent>();
 
 const armPlainPaste: Command = () => {
-  plainPasteUntil = Date.now() + 1000;
+  // 300 ms: a real chord's paste event lands well inside it, while a chord
+  // that produced no event can no longer convert the NEXT plain Ctrl+V into
+  // an unsanitized paste a second later (s57 #B7)
+  plainPasteUntil = Date.now() + 300;
   return false;
 };
 
@@ -350,7 +387,15 @@ export const smartUrlPaste = EditorView.domEventHandlers({
     if (imeBusy(view) || isPlainPaste(event)) return false;
     const { main } = view.state.selection;
     if (main.empty) return false;
-    let url = (event.clipboardData?.getData("text/plain") ?? "").trim();
+    /* Multi-cursor: this transform only knows how to wrap ONE range; consuming
+     * the event starved the others of their paste entirely (s57 #B4). The
+     * native paste does the right thing for every range — let it. */
+    if (view.state.selection.ranges.length > 1) return false;
+    /* Chat apps decorate copied URLs with zero-width junk; this is the one
+     * paste path the sanitizer never sees (it consumes the event first) —
+     * clean here or the junk lands invisibly inside the href (s57 #B12). */
+    const url0 = cleanPastedText(event.clipboardData?.getData("text/plain") ?? "").trim();
+    let url = url0;
     if (!urlRe.test(url)) return false;
     if (/^www\./i.test(url)) url = `https://${url}`;
     if (crossesFormatting(view.state, main.from, main.to)) return false;

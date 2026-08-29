@@ -1,4 +1,4 @@
-import type { Range } from "@codemirror/state";
+import { StateEffect, type Range } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -105,6 +105,22 @@ let cellCtx: CanvasRenderingContext2D | null = null;
 let cellCodeCtx: CanvasRenderingContext2D | null = null;
 let cellEm = 0;
 let cellFonts = "";
+let cellMeasureSig = "";
+
+/* Word → widest-form width in the cell faces. A keystroke inside a table busts
+ * the template memo below, and without this every cell of the whole table went
+ * back to the canvas (~3.5 ms per keystroke on a 60-row table); with it only
+ * the edited cell's words are measured anew. Cleared when the cell metrics
+ * change and when the webfonts settle (fontsSettled below).
+ * ponytail: bounded by wholesale clear, same trade as the template memo. */
+const wordWidthCache = new Map<string, number>();
+const WORD_CACHE_MAX = 20000;
+
+/* Webfonts that arrive after the first paint change glyph widths — every width
+ * measured against a fallback face is wrong once the real one is in. The
+ * plugin dispatches this after document.fonts settles so one rebuild re-measures
+ * with the loaded faces. */
+const fontsSettled = StateEffect.define<null>();
 
 function refreshMetrics(view: EditorView): void {
   metricsCtx ??= document.createElement("canvas").getContext("2d");
@@ -130,6 +146,11 @@ function refreshMetrics(view: EditorView): void {
   // to reserve from
   if (cellCtx) cellCtx.font = `650 ${cellEm}px ${ui}`;
   if (cellCodeCtx) cellCodeCtx.font = `${cellEm * CELL_CODE_SCALE}px ${mono}`;
+  const sig = `${cellEm}|${cellFonts}`;
+  if (sig !== cellMeasureSig) {
+    cellMeasureSig = sig;
+    wordWidthCache.clear();
+  }
 }
 
 function textWidth(text: string): number {
@@ -146,15 +167,32 @@ function widestCellWord(text: string, hasCode: boolean): number {
   let widest = 0;
   for (const word of text.split(/\s+/)) {
     if (!word) continue;
-    const plain = cellCtx ? cellCtx.measureText(word).width : 0;
-    const code =
-      hasCode && cellCodeCtx
-        ? cellCodeCtx.measureText(word).width + 2 * CELL_CODE_PAD_X * CELL_CODE_SCALE * cellEm
-        : 0;
-    widest = Math.max(widest, plain, code);
+    const key = hasCode ? `${word}\u0000c` : word;
+    let width = wordWidthCache.get(key);
+    if (width === undefined) {
+      const plain = cellCtx ? cellCtx.measureText(word).width : 0;
+      const code =
+        hasCode && cellCodeCtx
+          ? cellCodeCtx.measureText(word).width + 2 * CELL_CODE_PAD_X * CELL_CODE_SCALE * cellEm
+          : 0;
+      width = Math.max(plain, code);
+      if (wordWidthCache.size >= WORD_CACHE_MAX) wordWidthCache.clear();
+      wordWidthCache.set(key, width);
+    }
+    widest = Math.max(widest, width);
   }
   return widest;
 }
+
+/* The whole-table measurement is flat ~3.5–5.4 ms per viewport change on a
+ * 100×5 table — every scroll step re-ran the canvas measureText loop over
+ * every cell (s51 #41). The template depends only on the table's text and the
+ * cell metrics, so it is memoized on exactly those: a scroll is a lookup, an
+ * edit inside the table is a miss, and a font-metric change re-keys it.
+ * ponytail: bounded by wholesale clear at 64 entries — an LRU is not worth
+ * its weight for a per-session, per-table cache. */
+const tableTemplateCache = new Map<string, string>();
+const TABLE_MEMO_MAX = 64;
 
 /* Nodes whose text is syntax or verbatim content — smart typography must not
  * touch them (`--` inside a URL, quotes inside code, a setext `---` underline). */
@@ -319,6 +357,10 @@ export function buildDecorations(
     const alignments = tableAlignments(separator);
     const columnWidths = new Array<number>(columns).fill(0);
     const columnFloors = new Array<number>(columns).fill(0);
+    // the memo key carries the metrics: same text under a different cellEm
+    // must re-measure, and refreshMetrics runs every build (s51 #41)
+    const memoKey = `${cellEm}|${state.sliceDoc(table.from, table.to)}`;
+    const cached = tableTemplateCache.get(memoKey);
 
     rows.forEach((row, rowIndex) => {
       for (const cell of row.getChildren("TableCell")) {
@@ -329,39 +371,45 @@ export function buildDecorations(
           columnWidths[column - 1],
           visibleLength + (row === header ? 1 : 0),
         );
-        columnFloors[column - 1] = Math.max(
-          columnFloors[column - 1],
-          widestCellWord(text, state.sliceDoc(cell.from, cell.to).includes("`")),
-        );
+        // the canvas measurement is the expensive half — skipped on a memo hit
+        if (cached === undefined) {
+          columnFloors[column - 1] = Math.max(
+            columnFloors[column - 1],
+            widestCellWord(text, state.sliceDoc(cell.from, cell.to).includes("`")),
+          );
+        }
       }
     });
 
     while (columns > 1 && columnWidths[columns - 1] === 0) columns -= 1;
-    const columnWeights = columnWidths
-      .slice(0, columns)
-      .map((width) => Math.min(28, Math.max(6, width)));
-    /* Each track carries a floor: its widest word plus the cell's padding, so a
-     * column can never be narrower than a word it has to show. `min(…, equal
-     * share)` caps every floor at 100/n % of the card, so the floors can never
-     * add up past the card's own width — a table overflows its box for no
-     * table, and a word that is genuinely wider than a fair share wraps. */
-    const share = (100 / columns).toFixed(3);
-    const template = columnWeights
-      .map((weight, index) => {
-        const floor = Math.ceil(columnFloors[index] + 2 * CELL_PAD_X * cellEm) + 1;
-        return `minmax(min(${floor}px, ${share}%), ${weight}fr)`;
-      })
-      .join(" ");
-    const totalWeight = columnWeights.reduce((sum, weight) => sum + weight, 0);
-    let runningWeight = 0;
-    const dividers = columnWeights
-      .slice(0, -1)
-      .map((weight) => {
-        runningWeight += weight;
-        const position = ((runningWeight / totalWeight) * 100).toFixed(3);
-        return `linear-gradient(to right, transparent calc(${position}% - 0.5px), var(--rule) calc(${position}% - 0.5px), var(--rule) calc(${position}% + 0.5px), transparent calc(${position}% + 0.5px))`;
-      })
-      .join(", ");
+    let template = cached;
+    if (template === undefined) {
+      const columnWeights = columnWidths
+        .slice(0, columns)
+        .map((width) => Math.min(28, Math.max(6, width)));
+      /* Each track carries a floor: its widest word plus the cell's padding, so a
+       * column can never be narrower than a word it has to show. Each floor is
+       * capped at its share of the floors' sum — min(floor, share%) — so the
+       * floors can never add up past the card's own width; a table overflows its
+       * box for no table. The share is proportional, not equal: an equal 100/n %
+       * cap squeezed a rigid column under its own content while a prose
+       * neighbour had slack to give ("2023-01-23" broke at its hyphens next to a
+       * half-empty notes column). A proportional cap only binds when the card is
+       * genuinely too small for every floor at once — then all columns shrink by
+       * the same ratio and long words wrap. */
+      const floors = columnWeights.map(
+        (_, index) => Math.ceil(columnFloors[index] + 2 * CELL_PAD_X * cellEm) + 1,
+      );
+      const totalFloor = floors.reduce((sum, floor) => sum + floor, 0);
+      template = columnWeights
+        .map((weight, index) => {
+          const share = ((100 * floors[index]) / totalFloor).toFixed(3);
+          return `minmax(min(${floors[index]}px, ${share}%), ${weight}fr)`;
+        })
+        .join(" ");
+      if (tableTemplateCache.size >= TABLE_MEMO_MAX) tableTemplateCache.clear();
+      tableTemplateCache.set(memoKey, template);
+    }
 
     rows.forEach((row, rowIndex) => {
       const layout = layouts[rowIndex];
@@ -383,7 +431,7 @@ export function buildDecorations(
         Decoration.line({
           class: classes,
           attributes: {
-            style: `--md-table-template: ${template}; --md-table-dividers: ${dividers || "none"}`,
+            style: `--md-table-template: ${template}`,
           },
         }).range(line.from),
       );
@@ -421,7 +469,9 @@ export function buildDecorations(
           Decoration.mark({
             inclusive: true,
             attributes: {
-              class: `md-table-cell md-table-cell-${alignment}`,
+              class: `md-table-cell md-table-cell-${alignment}${
+                column === 1 ? " md-table-cell-first" : ""
+              }`,
               style: `grid-column: ${column}; grid-row: 1`,
             },
           }).range(cursor, to),
@@ -434,7 +484,7 @@ export function buildDecorations(
           Decoration.mark({
             inclusive: true,
             attributes: {
-              class: "md-table-cell md-table-cell-left",
+              class: "md-table-cell md-table-cell-left md-table-cell-first",
               style: "grid-column: 1; grid-row: 1",
             },
           }).range(cursor, line.to),
@@ -689,6 +739,14 @@ export function buildDecorations(
 
           case "Link": {
             if (inActiveTableRow(node.from, node.to)) return;
+            /* A callout token the callout walk did not claim — `[!type]` past
+             * a quote's first line, where it is not a callout — parses as a
+             * shortcut-reference Link, and painting it made a dead
+             * accent-underlined affordance out of plain text (s51 #8's named
+             * failure mode, hit live in s57). Left raw on purpose: the printed
+             * page prints the token literally too, so the renderers agree. An
+             * inline `[!type](url)` keeps going — its slice doesn't end at `]`. */
+            if (/^\[!\w+\][-+]?$/.test(state.sliceDoc(node.from, node.to))) return;
             decos.push(Decoration.mark({ class: "md-link" }).range(node.from, node.to));
             if (revealsSource(node.from, node.to)) return;
             const marks = node.node.getChildren("LinkMark");
@@ -1033,8 +1091,27 @@ export const livePreview = ViewPlugin.fromClass(
     /** The hidden spans, for atomicRanges — see buildDecorations. */
     atomic: DecorationSet = Decoration.none;
 
+    /** Set by destroy(), read by the fonts.ready hook below. */
+    gone = false;
+
     constructor(view: EditorView) {
       this.decorations = this.build(view);
+      /* Widths measured before the webfonts landed came from fallback faces —
+       * list hanging indents (Source Serif) and code-word column floors
+       * (JetBrains Mono) are both canvas-measured. One rebuild when the faces
+       * settle; a view created after that skips this entirely. */
+      if (document.fonts.status !== "loaded") {
+        void document.fonts.ready.then(() => {
+          if (this.gone) return;
+          wordWidthCache.clear();
+          tableTemplateCache.clear();
+          view.dispatch({ effects: fontsSettled.of(null) });
+        });
+      }
+    }
+
+    destroy() {
+      this.gone = true;
     }
 
     build(view: EditorView): DecorationSet {
@@ -1078,6 +1155,8 @@ export const livePreview = ViewPlugin.fromClass(
           tr.effects.some(
             (e) =>
               e.is(vaultIndexChanged) ||
+              // one re-measure pass after the webfonts land (constructor)
+              e.is(fontsSettled) ||
               // the smart-typography switch lives in this field; without it the
               // toggle would only take effect on the next unrelated edit
               e.is(applyWritingModes),

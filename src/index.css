@@ -40,7 +40,10 @@
   --code-bg: #f1e7d6;
   --codeblock-bg: #f3ead9;
   --border: #e6d9c4; /* chrome hairlines: panel edges, separators, scrollbars */
-  --rule: #a08560; /* 3.10 — lines the reader must see: table grid, <hr>, cards */
+  --rule: #9b7f5a; /* lines the reader must see: table grid, <hr>, cards.
+     Measured on every face it draws over, not only --bg (the drift s51 #27
+     caught): bg 3.36 · body row 3.35 · codeblock/table header 3.15 ·
+     frontmatter card 3.15 · inline-code 3.07 — all ≥ 3.0 */
   --selection: #ead7c2;
   --highlight-bg: #f2dfae;
   --danger: #b53326;

@@ -36,7 +36,7 @@ interface CornerActionsProps {
 
 /* Three stacked rules with the middle one lit — the typed line, held centre. */
 const ICON_TYPEWRITER = (
-  <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
+  <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
     <path d="M2.5 4h9" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" opacity="0.4" />
     <path d="M2.5 7h6.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
     <path d="M2.5 10h9" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" opacity="0.4" />
@@ -45,7 +45,7 @@ const ICON_TYPEWRITER = (
 
 /* A lit middle band between two receding ones — the focus dimming, in miniature. */
 const ICON_FOCUS = (
-  <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
+  <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
     <rect x="2.5" y="2.6" width="9" height="1.6" rx="0.8" fill="currentColor" opacity="0.32" />
     <rect x="2.5" y="6" width="9" height="2" rx="1" fill="currentColor" />
     <rect x="2.5" y="9.8" width="9" height="1.6" rx="0.8" fill="currentColor" opacity="0.32" />
@@ -54,7 +54,7 @@ const ICON_FOCUS = (
 
 /* A curly quote — the thing the switch actually produces. */
 const ICON_TYPOGRAPHY = (
-  <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
+  <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
     <text
       x="7"
       y="11"
@@ -68,8 +68,10 @@ const ICON_TYPOGRAPHY = (
   </svg>
 );
 
+/* All icons render 14-over-14: a 13/14 (or 12/14) box scaled every coordinate
+ * by a fraction, so every axis-aligned stroke in the panel was AA mush. */
 const ICON_CHECK = (
-  <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true">
+  <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
     <path d="M2.5 7.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.4"
       strokeLinecap="round" strokeLinejoin="round" />
   </svg>
@@ -173,7 +175,7 @@ export function CornerActions({
           tabIndex={open ? 0 : -1}
           onClick={onSave}
         >
-          <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
             <path
               d="M2 1.5h8l2.5 2.5v8.5h-10.5z M4.5 1.5v3.5h5v-3.5 M4 12.5v-4h6v4"
               fill="none"
@@ -195,7 +197,7 @@ export function CornerActions({
           tabIndex={open ? 0 : -1}
           onClick={onExportPdf}
         >
-          <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
             <path
               d="M3 .75h6l2.5 2.5v10h-8.5z"
               fill="none"
@@ -225,7 +227,7 @@ export function CornerActions({
             tabIndex={open ? 0 : -1}
             onClick={onRevealFile}
           >
-            <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
               <path
                 d="M1 3.5h4l1.5 1.5h6.5v7h-12z"
                 fill="none"

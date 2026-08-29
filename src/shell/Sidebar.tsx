@@ -365,7 +365,7 @@ function VaultSwitcher({
               onOpenFolder();
             }}
           >
-            <span className="vault-row-name">Open Folder…</span>
+            <span className="vault-row-name">Open folder…</span>
             <span className="vault-row-path">Ctrl+Shift+O</span>
           </button>
         </div>
@@ -617,7 +617,7 @@ export function Sidebar({
           Open a folder to see your notes as a vault.
           <br />
           <button type="button" onClick={onOpenFolder}>
-            Open Folder… (Ctrl+Shift+O)
+            Open folder… (Ctrl+Shift+O)
           </button>
         </div>
       )}

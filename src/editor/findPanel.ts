@@ -1,5 +1,5 @@
 import { EditorView, type KeyBinding, type Panel, type ViewUpdate } from "@codemirror/view";
-import type { EditorState } from "@codemirror/state";
+import { EditorSelection, type EditorState } from "@codemirror/state";
 import {
   SearchQuery,
   closeSearchPanel,
@@ -16,6 +16,8 @@ import {
 } from "@codemirror/search";
 import { imeBusy } from "./imeGuard";
 import { isHidden } from "./visibleText";
+import { revealSourceEffect } from "./revealSource";
+import { applyWritingModes } from "./writingModes";
 
 /* In-note find (Ctrl+F): a small floating bar styled like the app's overlays.
  * Typing never moves the caret, so an active IME composition is never disturbed
@@ -70,6 +72,9 @@ class FindPanel implements Panel {
     this.input.setAttribute("main-field", "true");
     this.input.addEventListener("input", () => this.commit());
     this.input.addEventListener("keydown", (e) => {
+      // an IME commit delivers Enter with isComposing — that keystroke is the
+      // candidate's, not the panel's (stepping on it searched a half-typed query)
+      if (e.isComposing) return;
       if (e.key === "Enter") {
         e.preventDefault();
         (e.shiftKey ? findPrevious : findNext)(this.view);
@@ -89,11 +94,12 @@ class FindPanel implements Panel {
       b.className = "find-btn";
       b.title = title;
       b.innerHTML = html;
-      // mousedown, so the input never loses focus while stepping
-      b.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        action();
-      });
+      // mousedown only guards the focus (the input must not lose it while
+      // stepping); the action rides on click, which Enter/Space also fire —
+      // mousedown-as-action made "All" pointer-only, with no keyboard twin
+      // anywhere (s51 #26)
+      b.addEventListener("mousedown", (e) => e.preventDefault());
+      b.addEventListener("click", () => action());
       return b;
     };
 
@@ -123,6 +129,7 @@ class FindPanel implements Panel {
     this.replaceInput.spellcheck = false;
     this.replaceInput.addEventListener("input", () => this.commit());
     this.replaceInput.addEventListener("keydown", (e) => {
+      if (e.isComposing) return; // same IME-commit rule as the find input
       if (e.key === "Enter") {
         e.preventDefault();
         this.replace(replaceNext);
@@ -194,7 +201,15 @@ class FindPanel implements Panel {
       if (this.input.value !== query.search) this.input.value = query.search;
       if (this.replaceInput.value !== query.replace) this.replaceInput.value = query.replace;
     }
-    if (changed || update.docChanged || update.selectionSet) this.refreshCount(update.state);
+    /* A reveal (Ctrl+/) or a writing-mode toggle changes what is hidden — and
+     * therefore what the `test` predicate counts — without touching doc or
+     * selection. Without this the count sat stale until the next caret move. */
+    const hiddenSetMoved = update.transactions.some((tr) =>
+      tr.effects.some((e) => e.is(revealSourceEffect) || e.is(applyWritingModes)),
+    );
+    if (changed || update.docChanged || update.selectionSet || hiddenSetMoved) {
+      this.refreshCount(update.state);
+    }
   }
 
   /* Typing updates the query and brings the first match into view — scroll
@@ -254,11 +269,48 @@ const openReplacePanel = (view: EditorView): boolean => {
   return true;
 };
 
+/* Ctrl+D through the page's own eyes: the stock command matches hidden text
+ * too (a word inside a hidden href), which added an *invisible* selection —
+ * typing then rewrote the URL along with the visible word, silently. Find was
+ * taught this in s45 (the `test` predicate); this is the same lesson for
+ * select-next. Stock runs in a loop so its word-boundary and wrap semantics
+ * stay exactly CM6's; hidden hits are only ever dropped, never invented. */
+const selectNextVisibleOccurrence = (view: EditorView): boolean => {
+  const before = view.state.selection;
+  /* Stock keeps `main` on the range you started from, so the just-added
+   * occurrence is found by diffing the range set, never read off `main`. */
+  const had = new Set(before.ranges.map((r) => `${r.from}:${r.to}`));
+  let sawHidden = false;
+  for (let hops = 0; hops < 100; hops++) {
+    if (!selectNextOccurrence(view)) break;
+    const sel = view.state.selection;
+    const added = sel.ranges.find((r) => !had.has(`${r.from}:${r.to}`));
+    if (!added) break;
+    had.add(`${added.from}:${added.to}`);
+    if (!isHidden(view, view.state, added.from, added.to)) {
+      if (!sawHidden) return true;
+      // drop the hidden ranges picked up on the way; keep everything visible,
+      // and keep main where stock keeps it — on the range you started from
+      const keep = sel.ranges.filter((r) => !isHidden(view, view.state, r.from, r.to));
+      const m0 = before.main;
+      const mainIdx = keep.findIndex((r) => r.from === m0.from && r.to === m0.to);
+      view.dispatch({
+        selection: EditorSelection.create(keep, mainIdx < 0 ? 0 : mainIdx),
+      });
+      return true;
+    }
+    sawHidden = true;
+  }
+  // every remaining occurrence is hidden: leave the selection as it was
+  if (sawHidden) view.dispatch({ selection: before });
+  return !sawHidden;
+};
+
 export const findKeymap: KeyBinding[] = [
   { key: "Mod-f", run: imeSafe(openSearchPanel), preventDefault: true },
   { key: "Mod-h", run: imeSafe(openReplacePanel), preventDefault: true },
-  // select-next-occurrence (add a cursor at the next copy of the selection)
-  { key: "Mod-d", run: imeSafe(selectNextOccurrence), preventDefault: true },
+  // select-next-occurrence (add a cursor at the next VISIBLE copy of the selection)
+  { key: "Mod-d", run: imeSafe(selectNextVisibleOccurrence), preventDefault: true },
   { key: "F3", run: imeSafe(findNext), shift: imeSafe(findPrevious), preventDefault: true },
   { key: "Mod-g", run: imeSafe(findNext), shift: imeSafe(findPrevious), preventDefault: true },
   {

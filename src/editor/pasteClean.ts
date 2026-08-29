@@ -1,3 +1,4 @@
+import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { imeBusy } from "./imeGuard";
 import { isPlainPaste } from "./markdownKeymap";
@@ -38,7 +39,13 @@ const STRIP_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x7f, 0x7f], // DEL
   [0x00ad, 0x00ad], // soft hyphen
   [0x180e, 0x180e], // Mongolian vowel separator (deprecated space)
-  [0x200b, 0x200f], // zero-width space/joiner/non-joiner + LRM/RLM
+  [0x200b, 0x200b], // zero-width space
+  /* NOT 200C/200D: ZWNJ is orthographically required in Persian and Indic
+   * scripts, and ZWJ is the joiner in every emoji family/profession/flag
+   * sequence (👩‍💻, 👨‍👩‍👧, 🏳️‍🌈) — stripping them visibly corrupted pasted
+   * content. They are exactly as meaningful as the variation selectors the
+   * header already promises to keep (s57 #B11). */
+  [0x200e, 0x200f], // LRM/RLM
   [0x202a, 0x202e], // bidi embedding / override
   [0x2060, 0x2064], // word joiner + invisible math operators
   [0x2066, 0x2069], // bidi isolates
@@ -78,9 +85,14 @@ const CITATIONS = new RegExp(
   "gu",
 );
 
+/* U+2028/2029 LINE/PARAGRAPH SEPARATOR: an invisible non-\n "line break" (JS
+ * console copies, some PDF extractors). Replaced with a real newline rather
+ * than stripped — the reader saw a break there (s57 #B18). */
+const LINE_SEPS = new RegExp("[" + esc(0x2028) + esc(0x2029) + "]", "gu");
+
 /** Strip invisible corruption and AI citation crumbs from pasted text. */
 export function cleanPastedText(text: string): string {
-  return text.replace(INVISIBLE, "").replace(CITATIONS, "");
+  return text.replace(INVISIBLE, "").replace(CITATIONS, "").replace(LINE_SEPS, "\n");
 }
 
 /* Sits last in the paste chain (after image + URL-over-selection handling), so
@@ -95,13 +107,36 @@ export const pasteSanitizer = EditorView.domEventHandlers({
     const cleaned = cleanPastedText(text);
     if (cleaned === text) return false; // nothing invisible to remove
     event.preventDefault();
+    /* This path preempts CM6's own doPaste, so it must redo two things the
+     * native door did for free (s57 #B10/#B13): CRLF→LF (clipboardInputFilter
+     * lives inside doPaste — without this a junk-carrying Windows paste wrote
+     * literal \r into the doc, and the next save put stray CR bytes on disk),
+     * and the N-lines-to-N-cursors rule for multi-range selections. */
+    const insert = cleaned.replace(/\r\n?/g, "\n");
     // A paste that was *entirely* junk inserts nothing and leaves the selection
     // intact, rather than silently deleting it.
-    if (cleaned) {
-      view.dispatch(view.state.replaceSelection(cleaned), {
-        userEvent: "input.paste",
-        scrollIntoView: true,
-      });
+    if (insert) {
+      const { state } = view;
+      const lines = insert.split("\n");
+      const ranges = state.selection.ranges;
+      if (ranges.length > 1 && lines.length === ranges.length) {
+        let i = 0;
+        view.dispatch(
+          state.changeByRange((range) => {
+            const line = lines[i++];
+            return {
+              changes: { from: range.from, to: range.to, insert: line },
+              range: EditorSelection.cursor(range.from + line.length),
+            };
+          }),
+          { userEvent: "input.paste", scrollIntoView: true },
+        );
+      } else {
+        view.dispatch(view.state.replaceSelection(insert), {
+          userEvent: "input.paste",
+          scrollIntoView: true,
+        });
+      }
     }
     return true;
   },
